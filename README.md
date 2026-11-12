@@ -1,79 +1,115 @@
-# Meowoo 喵呜 · Android
+# Meowoo · 喵呜
 
-首版面向 Android 手机、平板与电视。原生 Kotlin + Jetpack Compose + Media3，不使用 WebView 播放，不内置服务器或额外软件解码引擎。沿用已选定的蓝绿白头像。
+**面向 Android 手机、平板和电视的个人影音应用。**
 
-通用内容源开发与技术交接见 [Meowoo.md](Meowoo.md)，包含当前实现、待补充接口、播放器对接、历史迁移、双输入交互及验收要求。
+Meowoo 将本地视频、网络播放地址和在线内容源放进统一的观看体验，面向番剧、剧集、电影、综艺与短剧。采用蓝、绿、白配色，支持触屏与电视遥控操作。
 
-工作区目录 `HG` 改名为 `Meowoo` 的辅助脚本为 [scripts/Rename-Workspace.ps1](scripts/Rename-Workspace.ps1)。需要先解除 Windows 对目录的占用；支持 `-WhatIf` 预览，成功后同步本机 SDK 路径。项目文档记录了当前改名状态。
+后续将扩展自定义来源、播放中换源、网盘与 NAS、OO 账号及跨设备进度同步，并逐步加入漫画和轻小说阅读。
 
-## 安装包与设备
+## 支持设备
 
-| 构建变体 | 设备 | 布局与交互 | 包名 |
-| --- | --- | --- | --- |
-| handheld | 手机 | 竖屏，底部导航，触控 | app.meowoo.android |
-| handheld | 平板 | 横屏，侧栏导航，宽屏布局 | app.meowoo.android |
-| tv | Android TV / Google TV / 触屏大屏 | 横屏，双启动入口，焦点高亮按钮，遥控器与触屏 | app.meowoo.android.tv |
+| 设备 | 布局 | 操作方式 |
+| --- | --- | --- |
+| Android 手机 | 竖屏、底部导航 | 触屏 |
+| Android 平板 | 横屏、侧栏导航 | 触屏 |
+| Android TV／触屏大屏 | 横屏、电视界面 | 遥控器、方向键与触屏 |
 
-最低 Android 6.0（API 23）。平板按系统 `smallestScreenWidthDp >= 600` 判定。Activity 请求手机竖屏、平板感应横屏；分屏、折叠屏或系统兼容模式可能覆盖方向请求，仍需真机验证。TV 0.1.1 同时提供普通 Launcher 与 Leanback 入口，两种硬件能力均非必需，不会排除无触屏电视或无 Leanback 的触屏大屏。
+最低支持 **Android 6.0（API 23）**。手机和平板使用 handheld 版本，电视使用 tv 版本。其他平台尚未提供客户端。
 
-## 0.1.0 范围
+## 功能状态
 
-- 发现页、可搜索的本地观看记录、内容源状态、设置。
-- 系统文件选择器打开视频，不申请整个存储空间权限。
-- 输入 HTTPS 视频/HLS 地址，通过 Media3 播放；具体格式、音视频编码与字幕支持依赖设备及 Media3，不保证任意网页链接都能播放。
-- 每 5 秒保存正在播放的视频进度；退到后台暂停，退出播放释放播放器；临近结尾的记录从头播放。
-- 默认关闭的 NSFW 设置保存在本机；来源和条目双重过滤，来源 + ID 隔离观看记录。关闭后退出不再允许显示的播放内容，记录保留。
-- 黄果明确标为“尚待迁移”，红果标为“尚未接入”，未发起这些站点的请求。成人类别只表示分级范围，不表示新增站点。
-- 两个包分别保存设置和观看历史；无账号同步、云上传、BT、下载管理或服务端转码。
+“已支持”表示当前公开源码具备该能力；“已实现，待发布”表示已完成实现，但尚未包含在公开源码或正式发行版中；“规划中”表示尚未实现。
 
-本次未复制 Miru、Animeko 或 Izuko 的实现代码。TV 模块组织与遥控交互参考 [Izuko TV](https://github.com/GrahamZen/izuko-tv) 和 [Android Compose for TV](https://developer.android.com/training/tv/playback/compose)。已有 HGhub 保留在相邻目录，不作原地替换。
+| 功能 | 状态 | 说明 |
+| --- | --- | --- |
+| 本地视频播放 | 已支持 | 使用系统文件选择器打开视频 |
+| HTTPS 视频地址播放 | 已支持 | 支持可直接访问的 MP4、HLS 等媒体地址 |
+| 原生播放控制 | 已支持 | 暂停、进度拖动、播放器提供的字幕与音轨选择 |
+| 观看历史与续播 | 已支持 | 保存本机观看记录与播放进度 |
+| 手机、平板、TV 界面 | 已支持 | 按设备提供布局；TV 支持遥控与触屏 |
+| 内容偏好开关 | 已支持 | 默认关闭扩展内容显示，按偏好过滤来源与历史 |
+| 在线来源浏览与搜索 | 已实现，待发布 | 分类、分页、封面、详情和分集选择；具体能力随来源而异 |
+| 多线路选集 | 已实现，待发布 | 在作品详情中选择线路与剧集 |
+| 在线地址刷新与重试 | 已实现，待发布 | 重新获取播放地址并保留观看进度 |
+| 播放状态恢复优化 | 已实现，待发布 | 改善界面重建、文件授权和返回后的状态恢复 |
+| 自定义播放源 | 规划中 | 添加、编辑、启停、排序、连接测试、配置导入导出 |
+| 播放中换线路／换来源 | 规划中 | 匹配同一作品与分集，保留播放位置 |
+| 聚合搜索 | 规划中 | 同时查询多个启用的来源 |
+| 收藏与追剧 | 规划中 | 想看、在看、看完、更新提醒 |
+| 自动下一集与播放体验增强 | 规划中 | 连续播放、手势、外挂字幕等 |
+| 网盘与 WebDAV | 规划中 | 浏览与播放个人网盘及 WebDAV 文件 |
+| NAS 与 SMB | 规划中 | 访问局域网媒体目录 |
+| 飞牛支持 | 规划中 | 文件共享接入；影视媒体库作为独立适配能力 |
+| OO 账号与云存档 | 规划中 | 手机／TV 登录、观看进度同步、备份与恢复 |
+| 漫画阅读 | 规划中 | 章节目录、条漫、翻页、缩放与阅读进度 |
+| 轻小说阅读 | 规划中 | 字体排版、章节、书签与阅读进度 |
+| 弹幕、下载与投屏 | 规划中 | 分阶段提供 |
+| Web、桌面与 iOS | 后续评估 | 当前优先完善 Android 三类设备 |
 
-## 构建
+## 在线来源
 
-使用 Android Studio 或 JDK 17+ 与 Gradle 9.1.0。JDK 25 从 Gradle 9.1 起可运行；工程使用 AGP 9.0.1 的内置 Kotlin，并配套 Compose Compiler 2.2.10。安装 Android SDK platform 36、build-tools 36.0.0 与 platform-tools。
+以下普通视频来源已实现，**等待后续版本发布**：
 
-在 `local.properties` 配置本机 SDK 路径（不提交此文件），或者设置 `ANDROID_HOME`。
+| 来源 | 内容与范围 |
+| --- | --- |
+| 稀饭动漫 Next | 动漫浏览、搜索、详情与选集 |
+| 红果短剧 | 官网目录及实际开放的剧集；不包含未开放全集 |
+| 非凡资源 | 影视、动漫、综艺与短剧 |
+| 量子资源 | 影视、动漫、综艺与短剧 |
+| 暴风资源 | 影视、动漫、综艺与短剧 |
+
+来源可用性、更新速度、线路和播放格式由对应服务决定。普通网页地址不等于可直接播放的视频地址。不同来源与线路目前分别保存进度。
+
+## 接下来会做什么
+
+1. **来源管理**：自定义源、配置导入导出、启停排序和连接测试。
+2. **完整观看流程**：播放中换源、分集匹配、自动下一集、收藏和追剧。
+3. **个人媒体库**：WebDAV／网盘、SMB／NAS、飞牛文件与影视服务。
+4. **账号与同步**：接入 OO 账号，支持 TV 配对、跨设备进度和备份恢复。
+5. **阅读与扩展体验**：漫画、轻小说、弹幕、下载和投屏。
+
+具体功能以发布版本说明为准，不承诺尚未实现的能力已经可用。
+
+## 隐私与数据
+
+- 当前播放历史与设置保存在本机，手机／平板版和 TV 版分别保存。
+- 当前没有账号登录、云同步或视频上传。
+- 本地文件通过系统授予的访问权限读取。
+- 内容偏好由本机用户控制；显示开关不等同于年龄验证。
+- 规划中的云存档用于同步记录与设置，视频文件、本机文件权限和来源登录凭据不作为默认同步内容。
+
+## 获取与使用
+
+目前尚无正式发行安装包。后续版本将在 [GitHub Releases](https://github.com/Meowopia/Meowoo/releases) 提供。
+
+从源码构建后：
+
+1. 安装与设备对应的 handheld 或 tv 版本。
+2. 在首页打开本地视频，或输入可直接访问的 HTTPS 媒体地址。
+3. 从观看历史继续上次播放。
+4. 在线来源功能以实际安装版本为准。
+
+## 技术与构建
+
+Kotlin · Jetpack Compose · Media3 ExoPlayer
+
+需要 JDK 17+、Android SDK 36 与项目的 Gradle Wrapper。在 `local.properties` 配置 SDK 路径，或设置 `ANDROID_HOME`。
 
 ```powershell
 .\gradlew.bat :app:assembleHandheldDebug :app:assembleTvDebug
-.\gradlew.bat :app:testHandheldDebugUnitTest :app:testTvDebugUnitTest :app:lintHandheldDebug :app:lintTvDebug
 ```
 
-APK 输出在 `app/build/outputs/apk/handheld/debug/` 和 `app/build/outputs/apk/tv/debug/`。Debug 包用于验证，正式发行需要配置自己的签名后构建 release；release 已开启 R8 与资源裁剪。
+APK 分别输出到 `app/build/outputs/apk/handheld/debug/` 和 `app/build/outputs/apk/tv/debug/`。调试包用于体验与验证，正式发行包需要独立签名。
 
-Windows 也可运行 `./build.ps1`；首次构建网络不通时使用 `./build.ps1 -UseMirror`，仅本次构建通过阿里云镜像取依赖，不改变项目默认仓库。`./build.ps1 -Task Check -UseMirror` 执行单元测试与 lint。脚本优先使用本项目已准备的 `.local-tools` 工具与缓存，否则调用标准 Gradle Wrapper；不修改系统环境变量。工具和 SDK 不纳入 Git。
+## 参考项目
 
-连接对应设备后运行 UI 测试：
+| 项目 | 参考方向 |
+| --- | --- |
+| [Miru](https://github.com/miru-project/miru-app) | 多来源与扩展组织 |
+| [Animeko](https://github.com/open-ani/animeko) | 追番体验、来源与播放流程 |
+| [AniCh](https://github.com/Sle2p/AniCh) | 多端媒体应用思路 |
+| [AnimeFlow](https://github.com/openAnimeFlow/AnimeFlow) | 来源配置、候选匹配与播放状态管理 |
+| [Kazumi](https://github.com/Predidit/Kazumi) | 规则管理、多源选择与跨设备同步设计 |
+| [Izuko TV](https://github.com/GrahamZen/izuko-tv) | 电视端浏览与交互 |
 
-```powershell
-.\gradlew.bat :app:connectedHandheldDebugAndroidTest
-# Android TV 设备单独执行：
-.\gradlew.bat :app:connectedTvDebugAndroidTest
-```
-
-## 上机验收
-
-- 手机竖屏 / 平板横屏 / 电视 Leanback 启动；系统栏与安全区不遮挡按钮。
-- 本地 MP4 与可直连 HTTPS HLS 的起播、暂停、拖动、字幕、音轨、返回续播。
-- 手机与平板切后台暂停、返回后手动继续，退出播放无声音残留。
-- TV 方向键遍历导航和操作按钮，确认播放；播放器返回先收起控制层，再退出，返回主页后有可见焦点。
-- TV 触摸导航按钮、滑动片库、输入地址、切换 NSFW；播放时轻触画面唤出控制栏，拖动进度，点击顶部“返回片库”。触屏与遥控器交替操作，每次确认只执行一次，切换输入方式不重建播放器。
-- NSFW 开关重启后保持；关闭时黄果隐藏，红果和本地来源仍可见。
-- 无文件选择器的电视可使用 HTTPS 地址；失效地址和被撤销文件权限给出播放错误。
-
-尚未连接真机，UI 测试与以上播放验收不能用编译成功代替。
-
-## 本次验证（2026-11-11）
-
-- handheld、tv 调试 APK 均已构建，并通过 APK 签名校验。
-- 6 个核心单元测试在两个构建变体各执行一次，共 12 项通过。
-- 两个变体的 Android Lint 均为 0 错误，仍有非阻断警告（版本、图标形状、样式建议等）；未通过屏蔽检查或生成 baseline 绕过错误。
-- 两个变体的 Android UI 测试 APK 已编译，因未连接设备而未执行。
-- 已核对手机包为普通 Launcher 入口，电视包为 Leanback 入口且不要求触摸屏。
-- 供安装验证的调试包位于 `artifacts/`；不是正式发行签名版本。尚未完成真机播放、资源占用与遥控体验验证。
-
-## TV 0.1.1 双输入更新
-
-TV 按钮使用同时支持触摸与键盘/D-pad 的 Compose Material3 Button，保留电视焦点描边与放大效果，触摸高度至少 48dp。播放器沿用 Media3 触摸控制栏，在触摸模式显示可点击的返回入口；遥控模式保留分层返回。输入切换只调整焦点，不重新创建播放会话。新增真实触摸事件、遥控确认与触屏返回入口的 UI 测试，需连接设备执行。
-
-本次 TV/handheld 构建与两种 UI 测试包编译通过，TV 核心单元测试 6 项通过，TV lint 为 0 错误、7 项非阻断警告。已核对 TV 0.1.1 的双 Launcher 入口、硬件可选声明和 APK 签名；仍未连接设备执行触屏/遥控交互测试。新版安装包：`artifacts/Meowoo-0.1.1-android-tv-debug.apk`。
+参考项目有各自的许可证和资源授权；列为参考不代表其功能已全部移植，也不代表规则或插件格式完全兼容。
