@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.Meowoo" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0A1422</item>
+        <item name="android:navigationBarColor">#0A1422</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#0A1422</item>
+        <item name="android:colorAccent">#7BE3CC</item>
+    </style>
+</resources>
