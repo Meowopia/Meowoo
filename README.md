@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="app/src/main/res/drawable-nodpi/mascot.png" alt="Meowoo 喵呜看板娘" width="200" />
+<img src="assets/brand/meowoo-logo-mono.png" alt="Meowoo 喵呜 Logo" width="200" />
 
 <h1>Meowoo · 喵呜</h1>
 
