@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/brand/meowoo-logo-flat.png" alt="Meowoo 喵呜 Logo" width="160" />
+<img src="assets/brand/meowoo-logo-flat-centered.png" alt="Meowoo 喵呜 Logo" width="160" />
 
 <h1>Meowoo · 喵呜</h1>
 
