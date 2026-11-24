@@ -5,7 +5,7 @@
 <h1>Meowoo · 喵呜</h1>
 
 <p><strong>把喜欢的故事，带到每一块屏幕。</strong></p>
-<p>跨平台个人影音与阅读客户端 · 视频 / 漫画 / 轻小说</p>
+<p>跨设备私人影院 · 视频为主，也保留漫画与轻小说</p>
 
 <p>
 <a href="https://meowoo.meowopia.com/">官网</a> ·
@@ -17,9 +17,9 @@
 
 </div>
 
-Meowoo（喵呜）新版基于 [Miru Alpha](https://github.com/miru-project/miru-alpha) 开发，使用 Flutter / Dart，并内置 [miru-core](https://github.com/miru-project/miru-core) 运行来源扩展和处理媒体请求。
+Meowoo（喵呜）新版基于 [Miru Alpha](https://github.com/miru-project/miru-alpha) 开发，使用 Flutter / Dart，并内置 Core（源自 [miru-core](https://github.com/miru-project/miru-core)）运行来源扩展和处理媒体请求。新版优先做好私人片库、视频播放和跨设备续播。
 
-> **开发预览**：新版尚未发布，当前公开代码仍为早期客户端。以下是新版的产品方向和验收状态；安装包、支持平台及使用说明以实际发布为准。
+> **开发预览**：新版尚未发布，当前公开代码仍为早期客户端。下表区分上游能力、Meowoo 的开发进度和发布范围。支持平台及使用说明以实际发布为准。
 
 <a id="features"></a>
 
@@ -30,11 +30,13 @@ Meowoo（喵呜）新版基于 [Miru Alpha](https://github.com/miru-project/miru
 | 视频播放、漫画和轻小说阅读 | 上游已有能力，Meowoo 待验收 |
 | 来源扩展、搜索、详情和选集 | 上游已有能力，Meowoo 待验收；可用来源取决于具体扩展 |
 | 本地历史、收藏和下载管理 | 上游已有能力，Meowoo 待验收 |
-| 界面语言 | 本轮以简体中文和 English 为基础；可用语言以发布版本为准，更多语言按翻译和验收进度交付 |
-| 私人媒体库、NAS 和更多来源适配 | 规划中 |
+| Jellyfin 私人片库 | 初步接入已实现，待发布；片库浏览和基础播放仍待真实服务器与设备实测 |
+| 内置原创装扮 | 预览、应用与恢复默认已实现，待发布；各端仍待实机验收 |
+| 界面语言 | 以简体中文和 English 为基础；更多语言按翻译和验收进度交付 |
+| 原生 NAS、飞牛和 SMB 接入 | 规划中；NAS 或飞牛可作为自建 Jellyfin 的宿主 |
 | OO 登录、TV 配对与跨设备云存档 | 尚未交付 |
 
-应用不内置片库。界面语言和影片的字幕、音轨语言分别管理。
+应用不内置影视片库，计划先提供开放样片。界面语言和影片的字幕、音轨语言分别管理。
 
 <a id="platforms"></a>
 
