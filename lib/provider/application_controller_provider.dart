@@ -322,6 +322,8 @@ class ApplicationController extends _$ApplicationController {
 
   void changeLanguage(String language) {
     MiruSettings.setSettingSync(SettingKey.language, language);
-    state = state.copyWith(language: language);
+    state = state.copyWith(
+      language: MiruSettings.getSettingSync<String>(SettingKey.language),
+    );
   }
 }

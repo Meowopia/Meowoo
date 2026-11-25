@@ -4,7 +4,6 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_i18n/flutter_i18n.dart';
 import 'package:flutter_i18n/loaders/decoders/json_decode_strategy.dart';
-import 'package:miru_alpha/utils/setting_dir_index.dart';
 import 'package:miru_alpha/utils/router/router_util.dart';
 
 final GlobalKey<ScaffoldMessengerState> messengerKey =
@@ -16,9 +15,6 @@ class I18nUtils {
       useCountryCode: false,
       fallbackFile: 'en',
       basePath: 'assets/i18n',
-      forcedLocale: Locale(
-        MiruSettings.getSettingSync<String>(SettingKey.language),
-      ),
       decodeStrategies: [JsonDecodeStrategy()],
     ),
   );

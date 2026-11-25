@@ -10,12 +10,17 @@ import 'package:miru_alpha/miru_core/proto/proto.dart' as proto;
 import 'package:path/path.dart' as p;
 
 import 'appearance_session.dart';
+import 'ui_language.dart';
 import 'ordered_settings_writes.dart';
 import 'settings_snapshot_guard.dart';
 import 'nsfw_session.dart';
 
 class MiruSettings {
   static Map<String, String> _settingsCache = {};
+  static String _defaultDownloadPath = '';
+  static void setDefaultDownloadPath(String path) =>
+      _defaultDownloadPath = path;
+
   static final _orderedWrites = OrderedSettingsWrites();
   static final _snapshotGuard = SettingsSnapshotGuard();
   static Future<void> _nsfwWrites = Future<void>.value();
@@ -56,7 +61,11 @@ class MiruSettings {
       if (decoded is! Map) return;
       for (final key in _sessionKeys) {
         final value = decoded[key];
-        if (value != null) _settingsCache[key] = value.toString();
+        if (value != null) {
+          _settingsCache[key] = key == SettingKey.language
+              ? normalizeUiLanguage(value)
+              : value.toString();
+        }
       }
       logger.info('Session settings loaded from $_sessionFilePath');
     } catch (e) {
@@ -101,6 +110,7 @@ class MiruSettings {
         local: _settingsCache,
         deviceLocalKeys: {
           SettingKey.skinPackId,
+          SettingKey.language,
           if (packSelected) SettingKey.baseColor,
           if (packSelected) SettingKey.accentColor,
         },
@@ -158,7 +168,7 @@ class MiruSettings {
     // Version the user chose to skip in the launch prompt ('' = never).
     SettingKey.ignoredUpdateVersion: '',
     SettingKey.laterUpdateVersion: '',
-    SettingKey.language: 'en',
+    SettingKey.language: defaultUiLanguage,
     SettingKey.novelFontSize: "18.0",
     SettingKey.theme: 'system',
     SettingKey.enableNSFW: 'false',
@@ -246,6 +256,11 @@ class MiruSettings {
 
   static void setSettingSync(String key, String value) {
     _snapshotGuard.edited([key]);
+    if (key == SettingKey.language) {
+      _settingsCache[key] = normalizeUiLanguage(value);
+      persistSessionSettings();
+      return;
+    }
     _settingsCache[key] = value;
     if (key == SettingKey.enableNSFW) {
       nsfwSession.setEnabled(value == 'true');
@@ -291,6 +306,7 @@ class MiruSettings {
   /// inherited by the next one and make it pass or fail depending on order.
   static void seedDefaultsForTest() {
     _snapshotGuard.reset();
+    _defaultDownloadPath = '';
     nsfwSession.setEnabled(false);
     _settingsCache
       ..clear()
@@ -310,8 +326,16 @@ class MiruSettings {
     }
   }
 
-  static T? getSetting<T>(String key) {
+  static String? _effectiveValue(String key) {
     final value = _settingsCache[key];
+    if (key == SettingKey.downloadPath && value != null && value.isEmpty) {
+      return _defaultDownloadPath;
+    }
+    return value;
+  }
+
+  static T? getSetting<T>(String key) {
+    final value = _effectiveValue(key);
     if (value == null) {
       return null;
     }
@@ -319,7 +343,7 @@ class MiruSettings {
   }
 
   static T getSettingSync<T>(String key) {
-    final value = _settingsCache[key];
+    final value = _effectiveValue(key);
     if (value == null) {
       throw Exception('Setting $key not found');
     }
@@ -462,7 +486,8 @@ class SettingKey {
   /// silenced — the settings banner keeps offering the update — and a newer
   /// release raises the prompt again on its own.
   static const laterUpdateVersion = 'LaterUpdateVersion';
-  static const language = 'Language';
+  // The legacy Language=en was auto-written and cannot distinguish opt-in.
+  static const language = 'MeowooUiLanguage';
   static const novelFontSize = 'NovelFontSize';
   static const enableNSFW = 'EnableNSFW';
   static const nsfwNoticeAccepted = 'MeowooNsfwNoticeAccepted';

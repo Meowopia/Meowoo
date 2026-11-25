@@ -65,7 +65,6 @@ class SettingGeneral extends HookConsumerWidget {
               value: MiruSettings.getSettingSync<String>(SettingKey.language),
               onChanged: (value) {
                 c.changeLanguage(value);
-                I18nUtils.changeLanguage(value);
               },
               entry: const [
                 RadioTileEntry(value: 'en', title: 'settings.labels.en'),

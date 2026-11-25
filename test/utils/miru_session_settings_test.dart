@@ -41,17 +41,46 @@ void main() {
   });
 
   test('loadSessionSettings overrides the seeded defaults', () {
-    File(MiruSettings.sessionFilePathOverride!)
-        .writeAsStringSync(jsonEncode({'Theme': 'light', 'Language': 'zh'}));
+    File(MiruSettings.sessionFilePathOverride!).writeAsStringSync(
+      jsonEncode({'Theme': 'light', SettingKey.language: 'en'}),
+    );
 
     // Simulate the bootstrap order: defaults first, session copy second.
     MiruSettings.seedDefaultsForTest();
     MiruSettings.loadSessionSettings();
 
     expect(MiruSettings.getSettingSync<String>('Theme'), 'light');
-    expect(MiruSettings.getSettingSync<String>('Language'), 'zh');
+    expect(MiruSettings.getSettingSync<String>(SettingKey.language), 'en');
     // Keys absent from the session file keep the default.
     expect(MiruSettings.getSettingSync<String>('BaseColor'), 'zinc');
+  });
+
+  test('old auto-written English does not override the Chinese default', () {
+    File(MiruSettings.sessionFilePathOverride!)
+        .writeAsStringSync(jsonEncode({'Theme': 'dark', 'Language': 'en'}));
+    MiruSettings.loadSessionSettings();
+    expect(MiruSettings.getSettingSync<String>(SettingKey.language), 'zh');
+    expect(MiruSettings.getSettingSync<String>(SettingKey.theme), 'dark');
+  });
+
+  test('manual English survives restarting the app', () {
+    MiruSettings.setSettingSync(SettingKey.language, 'en');
+    MiruSettings.seedDefaultsForTest();
+    MiruSettings.loadSessionSettings();
+    expect(MiruSettings.getSettingSync<String>(SettingKey.language), 'en');
+  });
+
+  test('app-owned download fallback does not override a chosen path', () {
+    MiruSettings.setDefaultDownloadPath('/private/meowoo/downloads');
+    expect(
+      MiruSettings.getSettingSync<String>(SettingKey.downloadPath),
+      '/private/meowoo/downloads',
+    );
+    MiruSettings.setSettingSync(SettingKey.downloadPath, '/tmp/chosen');
+    expect(
+      MiruSettings.getSettingSync<String>(SettingKey.downloadPath),
+      '/tmp/chosen',
+    );
   });
 
   test('a corrupt session file is ignored, not fatal', () {

@@ -173,7 +173,7 @@
   },
   "my_page": {
     "local_user": "On-device profile",
-    "account_notice": "OO account sign-in is not connected in this preview. Use your local library without signing in.",
+    "account_notice": "Use your local library without signing in.",
     "history": "History",
     "favorites": "Favorites",
     "downloads": "Downloads",

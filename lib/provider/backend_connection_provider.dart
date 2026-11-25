@@ -1,10 +1,6 @@
-import 'dart:async';
-
 import 'package:miru_alpha/miru_core/core.dart';
 import 'package:miru_alpha/provider/application_controller_provider.dart';
-import 'package:miru_alpha/utils/core/i18n.dart';
 import 'package:miru_alpha/utils/core/log.dart';
-import 'package:miru_alpha/utils/store/miru_settings.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 part 'backend_connection_provider.g.dart';
@@ -42,8 +38,6 @@ class BackendConnection extends _$BackendConnection {
   void _applyPersistedAppearance() {
     try {
       ref.read(applicationControllerProvider.notifier).reloadFromSettings();
-      final language = MiruSettings.getSettingSync<String>(SettingKey.language);
-      unawaited(I18nUtils.changeLanguage(language));
     } catch (error, stack) {
       logger.severe('Failed to apply persisted appearance', error, stack);
     }

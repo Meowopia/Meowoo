@@ -347,6 +347,8 @@ class _MainPageState extends ConsumerState<MainPage>
     final effectiveIndex = widget.child?.currentIndex ?? selected.value;
 
     useEffect(() {
+      // Phones use app-owned storage; no first-run permission modal.
+      if (Platform.isAndroid || Platform.isIOS) return null;
       Future.microtask(() async {
         // The dialog reads backend-persisted settings; hold it until the
         // connection gate resolves (the bootstrap seeded synchronous
@@ -428,147 +430,148 @@ class _MainPageState extends ConsumerState<MainPage>
       return () => HardwareKeyboard.instance.removeHandler(onKey);
     }, const []);
 
-    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.dark);
     return FTheme(
       data: themeData,
       child: PlatformWidget(
-        mobileWidget: Stack(
-          children: [
-            Column(
-              children: [
-                // The window bar owns the top strip of the WINDOW, above every
-                // route's content, because the OS title bar is hidden
-                // (titleBarStyle: hidden) and nothing else provides one.
-                //
-                // It is here in the layout flow -- not `Positioned` over the page
-                // -- so no page can ever start at y=0 underneath it. Overlaying
-                // it let `/search/single`'s own 50px header render *behind* the
-                // bar (measured: title at y=35..68, i.e. inside the bar's own
-                // 0..35 strip, back button at y=39).
-                if (!DeviceUtil.isMobile) ...[
-                  const DragWindows(),
-                  const FDivider(
-                    style: FDividerStyleDelta.delta(
-                      padding: EdgeInsetsGeometryDelta.value(EdgeInsets.zero),
+        mobileWidget: SafeArea(
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  // The window bar owns the top strip of the WINDOW, above every
+                  // route's content, because the OS title bar is hidden
+                  // (titleBarStyle: hidden) and nothing else provides one.
+                  //
+                  // It is here in the layout flow -- not `Positioned` over the page
+                  // -- so no page can ever start at y=0 underneath it. Overlaying
+                  // it let `/search/single`'s own 50px header render *behind* the
+                  // bar (measured: title at y=35..68, i.e. inside the bar's own
+                  // 0..35 strip, back button at y=39).
+                  if (!DeviceUtil.isMobile) ...[
+                    const DragWindows(),
+                    const FDivider(
+                      style: FDividerStyleDelta.delta(
+                        padding: EdgeInsetsGeometryDelta.value(EdgeInsets.zero),
+                      ),
                     ),
-                  ),
-                ],
-                Expanded(child: widget.child ?? const SizedBox()),
-                // Hide the bottom navigation bar when the keyboard is open to
-                // prevent its solid background from appearing as a black box
-                // above the keyboard.
-                if (MediaQuery.viewInsetsOf(context).bottom == 0)
-                  FBottomNavigationBar(
-                    // The reference nav scales each item to 95% while
-                    // pressed (`active:scale-95`); forui's default bounce
-                    // tween only goes to 97%.
-                    style: FBottomNavigationBarStyleDelta.delta(
-                      itemStyle: FBottomNavigationBarItemStyleDelta.delta(
-                        // The reference keeps the label the same color whether
-                        // or not the tab is selected; only the icon signals the
-                        // active tab. forui's default turns the selected label
-                        // primary + bold, so we replace the text style with one
-                        // that omits the `.selected` variant (it resolves to the
-                        // muted base) and keeps only the hover/pressed feedback.
-                        textStyle:
-                            FVariants<
-                              FTappableVariantConstraint,
-                              FTappableVariant,
-                              TextStyle,
-                              TextStyleDelta
-                            >.from(
-                              themeData.typography.body.xs3.copyWith(
-                                color: themeData.colors.mutedForeground,
-                                height: 1.5,
-                              ),
-                              variants: {
-                                [
-                                  FTappableVariant.hovered,
-                                  FTappableVariant.pressed,
-                                ]: TextStyleDelta.delta(
-                                  color: themeData.colors.hover(
-                                    themeData.colors.mutedForeground,
-                                  ),
+                  ],
+                  Expanded(child: widget.child ?? const SizedBox()),
+                  // Hide the bottom navigation bar when the keyboard is open to
+                  // prevent its solid background from appearing as a black box
+                  // above the keyboard.
+                  if (MediaQuery.viewInsetsOf(context).bottom == 0)
+                    FBottomNavigationBar(
+                      // The reference nav scales each item to 95% while
+                      // pressed (`active:scale-95`); forui's default bounce
+                      // tween only goes to 97%.
+                      style: FBottomNavigationBarStyleDelta.delta(
+                        itemStyle: FBottomNavigationBarItemStyleDelta.delta(
+                          // The reference keeps the label the same color whether
+                          // or not the tab is selected; only the icon signals the
+                          // active tab. forui's default turns the selected label
+                          // primary + bold, so we replace the text style with one
+                          // that omits the `.selected` variant (it resolves to the
+                          // muted base) and keeps only the hover/pressed feedback.
+                          textStyle:
+                              FVariants<
+                                FTappableVariantConstraint,
+                                FTappableVariant,
+                                TextStyle,
+                                TextStyleDelta
+                              >.from(
+                                themeData.typography.body.xs3.copyWith(
+                                  color: themeData.colors.mutedForeground,
+                                  height: 1.5,
                                 ),
-                              },
-                            ),
-                        tappableStyle: FTappableStyleDelta.delta(
-                          motion: FTappableMotionDelta.delta(
-                            bounceTween: const FImmutableTween<double>(
-                              begin: 1.0,
-                              end: 0.95,
+                                variants: {
+                                  [
+                                    FTappableVariant.hovered,
+                                    FTappableVariant.pressed,
+                                  ]: TextStyleDelta.delta(
+                                    color: themeData.colors.hover(
+                                      themeData.colors.mutedForeground,
+                                    ),
+                                  ),
+                                },
+                              ),
+                          tappableStyle: FTappableStyleDelta.delta(
+                            motion: FTappableMotionDelta.delta(
+                              bounceTween: const FImmutableTween<double>(
+                                begin: 1.0,
+                                end: 0.95,
+                              ),
                             ),
                           ),
                         ),
                       ),
+                      index: effectiveIndex,
+                      onChange: (value) {
+                        if (widget.child != null) {
+                          widget.child!.goBranch(value);
+                        }
+                        selected.value = value;
+                      },
+                      children: [
+                        // 0: Home
+                        FBottomNavigationBarItem(
+                          label: Text(_navItems[0].text.i18n),
+                          icon: HomeIcon(
+                            color: effectiveIndex == 0
+                                ? themeData.colors.primary
+                                : themeData.colors.mutedForeground,
+                            isTriggered: effectiveIndex == 0,
+                          ),
+                        ),
+                        // 1: Favorite (bookmark fills when selected)
+                        FBottomNavigationBarItem(
+                          label: Text(_navItems[1].text.i18n),
+                          icon: BookmarkIcon(
+                            color: effectiveIndex == 1
+                                ? themeData.colors.primary
+                                : themeData.colors.mutedForeground,
+                            isTriggered: effectiveIndex == 1,
+                          ),
+                        ),
+                        // 2: Search
+                        FBottomNavigationBarItem(
+                          label: Text(_navItems[2].text.i18n),
+                          icon: CompassIcon(
+                            color: effectiveIndex == 2
+                                ? themeData.colors.primary
+                                : themeData.colors.mutedForeground,
+                            isTriggered: effectiveIndex == 2,
+                          ),
+                        ),
+                        // 3: Extension (the supply chain)
+                        FBottomNavigationBarItem(
+                          label: Text(_navItems[3].text.i18n),
+                          icon: BlocksPathLoopIcon(
+                            color: effectiveIndex == 3
+                                ? themeData.colors.primary
+                                : themeData.colors.mutedForeground,
+                            isTriggered: effectiveIndex == 3,
+                          ),
+                        ),
+                        // 4: My hub, using the existing branch and route.
+                        FBottomNavigationBarItem(
+                          key: const ValueKey('my-bottom-tab'),
+                          label: Text(_navItems[4].text.i18n),
+                          icon: Icon(
+                            Icons.person_outline,
+                            color: effectiveIndex == 4
+                                ? themeData.colors.primary
+                                : themeData.colors.mutedForeground,
+                          ),
+                        ),
+                      ],
                     ),
-                    index: effectiveIndex,
-                    onChange: (value) {
-                      if (widget.child != null) {
-                        widget.child!.goBranch(value);
-                      }
-                      selected.value = value;
-                    },
-                    children: [
-                      // 0: Home
-                      FBottomNavigationBarItem(
-                        label: Text(_navItems[0].text.i18n),
-                        icon: HomeIcon(
-                          color: effectiveIndex == 0
-                              ? themeData.colors.primary
-                              : themeData.colors.mutedForeground,
-                          isTriggered: effectiveIndex == 0,
-                        ),
-                      ),
-                      // 1: Favorite (bookmark fills when selected)
-                      FBottomNavigationBarItem(
-                        label: Text(_navItems[1].text.i18n),
-                        icon: BookmarkIcon(
-                          color: effectiveIndex == 1
-                              ? themeData.colors.primary
-                              : themeData.colors.mutedForeground,
-                          isTriggered: effectiveIndex == 1,
-                        ),
-                      ),
-                      // 2: Search
-                      FBottomNavigationBarItem(
-                        label: Text(_navItems[2].text.i18n),
-                        icon: CompassIcon(
-                          color: effectiveIndex == 2
-                              ? themeData.colors.primary
-                              : themeData.colors.mutedForeground,
-                          isTriggered: effectiveIndex == 2,
-                        ),
-                      ),
-                      // 3: Extension (the supply chain)
-                      FBottomNavigationBarItem(
-                        label: Text(_navItems[3].text.i18n),
-                        icon: BlocksPathLoopIcon(
-                          color: effectiveIndex == 3
-                              ? themeData.colors.primary
-                              : themeData.colors.mutedForeground,
-                          isTriggered: effectiveIndex == 3,
-                        ),
-                      ),
-                      // 4: My hub, using the existing branch and route.
-                      FBottomNavigationBarItem(
-                        key: const ValueKey('my-bottom-tab'),
-                        label: Text(_navItems[4].text.i18n),
-                        icon: Icon(
-                          Icons.person_outline,
-                          color: effectiveIndex == 4
-                              ? themeData.colors.primary
-                              : themeData.colors.mutedForeground,
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
-            ),
-            // Overlay hookup mirrors the desktop branch; a no-op while the
-            // mobile SearchTrigger is hidden (open is only set from there).
-            if (!DeviceUtil.isMobile) const _DesktopSearchOverlay(),
-          ],
+                ],
+              ),
+              // Overlay hookup mirrors the desktop branch; a no-op while the
+              // mobile SearchTrigger is hidden (open is only set from there).
+              if (!DeviceUtil.isMobile) const _DesktopSearchOverlay(),
+            ],
+          ),
         ),
         desktopWidget: Column(
           children: [

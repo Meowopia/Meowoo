@@ -122,9 +122,26 @@ class _SettingItemsState extends ConsumerState<SettingPage> {
     sliverHeaders: [
       SimpleSliverHeaderDelegate(
         maxExtent: 56,
-        child: SnapSheetHeader(title: 'common.me'.i18n),
+        child: ColoredBox(
+          color: context.theme.colors.background,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'common.me'.i18n,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.theme.typography.body.xl.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     ],
+    childPad: false,
     desktopBody: _DesktopSettingsBody(selected: widget.selected),
     slivers: const [
       SliverToBoxAdapter(child: SettingsUpdateAlert()),

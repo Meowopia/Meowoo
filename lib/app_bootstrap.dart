@@ -183,6 +183,11 @@ Future<void> runMiruApp({required void Function() ensureBinding}) async {
       // the authoritative DB values once the core answers.
       MiruSettings.seedDefaults();
       MiruSettings.loadSessionSettings();
+      if (Platform.isAndroid || Platform.isIOS) {
+        MiruSettings.setDefaultDownloadPath(
+          "${MiruDirectory.appSupportDirectory}/downloads",
+        );
+      }
       MiruRequest.ensureInitalized(host: Core.baseUrl);
       if (Platform.isMacOS) {
         await WindowManipulator.initialize(enableWindowDelegate: true);
@@ -203,10 +208,6 @@ Future<void> runMiruApp({required void Function() ensureBinding}) async {
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
-      // Status bar hidden app-wide; the bottom system navigation bar stays.
-      // Video fullscreen temporarily hides both (immersiveSticky) and every
-      // exit path restores this exact mode (mobile_watch_page.dart) so the
-      // status bar never comes back on other pages.
       AppSystemUi.restore();
       // The init page is gone: the app mounts immediately and the backend
       // connection gate (backendConnectionProvider) holds data operations —
@@ -257,8 +258,6 @@ class App extends ConsumerStatefulWidget {
 }
 
 class _App extends ConsumerState<App> with WidgetsBindingObserver {
-  Timer? _statusBarRehideTimer;
-
   @override
   void initState() {
     VolumeController.instance.showSystemUI = false;
@@ -332,23 +331,7 @@ class _App extends ConsumerState<App> with WidgetsBindingObserver {
   }
 
   @override
-  void didChangeMetrics() {
-    // Android: pulling down the notification shade (or any inset change —
-    // keyboard, rotation) re-shows the status bar and the app's hidden state
-    // is NOT re-asserted when the shade closes, so the bar stays on every
-    // page. Re-apply the hidden mode once things settle: restarting the timer
-    // on every change dismisses the bar one second after the last one.
-    if (AppSystemUi.surfaceOwned) return;
-    _statusBarRehideTimer?.cancel();
-    _statusBarRehideTimer = Timer(const Duration(seconds: 1), () {
-      AppSystemUi.restore();
-    });
-    super.didChangeMetrics();
-  }
-
-  @override
   void dispose() {
-    _statusBarRehideTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -358,18 +341,25 @@ class _App extends ConsumerState<App> with WidgetsBindingObserver {
     final c = ref.watch(applicationControllerProvider);
     return MaterialApp.router(
       showPerformanceOverlay: kProfileMode,
-      supportedLocales: FLocalizations.supportedLocales,
+      locale: Locale(c.language),
+      supportedLocales: const [Locale('zh'), Locale('en')],
       key: ValueKey(c.language),
       // FToaster hosts every showFToast(...); without it a toast throws, and
       // one fired from the error handler re-enters that handler every frame.
-      builder: (context, child) => SkinPackScope(
-        pack: c.skinPack,
-        child: FTheme(
-          data: c.themeData,
-          child: FToaster(
-            // Above the router: sees the update state for every route, and
-            // raises the launch prompt when a newer build is found.
-            child: UpdatePromptListener(child: child!),
+      builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+        value: AppSystemUi.style(c.themeData.colors.brightness),
+        child: ColoredBox(
+          color: c.themeData.colors.background,
+          child: SkinPackScope(
+            pack: c.skinPack,
+            child: FTheme(
+              data: c.themeData,
+              child: FToaster(
+                // Above the router: sees the update state for every route, and
+                // raises the launch prompt when a newer build is found.
+                child: UpdatePromptListener(child: child!),
+              ),
+            ),
           ),
         ),
       ),

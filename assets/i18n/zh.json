@@ -168,7 +168,7 @@
   },
   "my_page": {
     "local_user": "本机用户",
-    "account_notice": "此预览版尚未接入 OO 账号登录，无需登录即可使用本机功能。",
+    "account_notice": "无需登录即可使用本机功能。",
     "history": "历史记录",
     "favorites": "我的收藏",
     "downloads": "下载管理",
@@ -186,7 +186,7 @@
     "diagnostics_help": "查看和导出现有应用诊断日志。"
   },
   "skin_packs": {
-    "title": "喵呜个性装扮",
+    "title": "个性装扮",
     "description": "背景、头像框、卡片与配色组成一套装扮。目前提供内置皮肤，不下载或执行代码。",
     "name_meowoo": "喵呜经典",
     "name_ocean": "海风来信",

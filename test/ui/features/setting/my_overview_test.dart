@@ -23,9 +23,7 @@ void main() {
         routes: [
           GoRoute(
             path: '/',
-            builder: (_, _) => const Scaffold(
-              body: SingleChildScrollView(child: MyOverview()),
-            ),
+            builder: (_, _) => const SingleChildScrollView(child: MyOverview()),
           ),
           for (final entry in destinations.entries)
             GoRoute(
@@ -45,6 +43,9 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('my-skins')), findsOneWidget);
+      expect(find.byKey(const ValueKey('my-settings')), findsOneWidget);
+      expect(tester.takeException(), isNull);
       final cloud = tester.widget<ListTile>(
         find.byKey(const ValueKey('my-cloud-unavailable')),
       );
