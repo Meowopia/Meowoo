@@ -1,0 +1,209 @@
+import 'package:miru_alpha/miru_core/grpc_client.dart';
+import 'package:miru_alpha/miru_core/proto/proto.dart' as proto;
+import 'package:miru_alpha/model/index.dart';
+import 'package:miru_alpha/utils/core/log.dart';
+
+class DatabaseService {
+  static proto.DbServiceClient get client => MiruGrpcClient.dbClient;
+
+  // Favorites
+  static Future<List<Favorite>> getAllFavorite() async {
+    final response = await client.getAllFavorite(proto.GetAllFavoriteRequest());
+    return response.favorites.map((e) => Favorite.fromProto(e)).toList();
+  }
+
+  static Future<Favorite?> getFavoriteByPackageAndUrl(
+    String package,
+    String url,
+  ) async {
+    try {
+      final response = await client.getFavoriteByPackageAndUrl(
+        proto.GetFavoriteByPackageAndUrlRequest()
+          ..package = package
+          ..url = url,
+      );
+      return Favorite.fromProto(response.favorite);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static Future<void> putFavoriteByIndex(List<FavoriteGroup> groups) async {
+    logger.info('putFavoriteByIndex $groups.map((e) => e.name)}');
+    await client.putFavoriteByIndex(
+      proto.PutFavoriteByIndexRequest()
+        ..groups.addAll(groups.map((e) => e.toProto())),
+    );
+  }
+
+  static Future<Favorite> putFavorite(
+    String detailUrl,
+    Detail? detail,
+    String package,
+    ExtensionType type,
+  ) async {
+    logger.info('putFavorite $detailUrl $package $type');
+    final response = await client.putFavorite(
+      proto.PutFavoriteRequest()
+        ..url = detailUrl
+        ..cover = detail?.cover ?? ''
+        ..package = package
+        ..title = detail?.title ?? ''
+        ..type = type.toString().split('.').last,
+    );
+    return Favorite.fromProto(response.favorite);
+  }
+
+  // Favorite Groups
+  static Future<List<FavoriteGroup>> getFavoriteGroupsById(int id) async {
+    final response = await client.getFavoriteGroupsById(
+      proto.GetFavoriteGroupsByIdRequest()..id = id,
+    );
+    return response.groups.map((e) => FavoriteGroup.fromProto(e)).toList();
+  }
+
+  static Future<List<FavoriteGroup>> getAllFavoriteGroup() async {
+    final response = await client.getAllFavoriteGroup(
+      proto.GetAllFavoriteGroupRequest(),
+    );
+    return response.groups.map((e) => FavoriteGroup.fromProto(e)).toList();
+  }
+
+  static Future<FavoriteGroup> putFavoriteGroup(
+    String name, [
+    List<int> items = const [],
+  ]) async {
+    final response = await client.putFavoriteGroup(
+      proto.PutFavoriteGroupRequest()
+        ..name = name
+        ..items.addAll(items),
+    );
+    return FavoriteGroup.fromProto(response.group);
+  }
+
+  static Future<void> renameFavoriteGroup(
+    String oldName,
+    String newName,
+  ) async {
+    await client.renameFavoriteGroup(
+      proto.RenameFavoriteGroupRequest()
+        ..oldName = oldName
+        ..newName = newName,
+    );
+  }
+
+  static Future<void> deleteFavoriteGroup(List<String> names) async {
+    await client.deleteFavoriteGroup(
+      proto.DeleteFavoriteGroupRequest()..names.addAll(names),
+    );
+  }
+
+  // History
+  static Future<List<History>> getHistoriesByType({
+    String? type,
+    int? page,
+    int? pageSize,
+  }) async {
+    final response = await client.getHistoriesByType(
+      proto.GetHistoriesByTypeRequest()
+        ..type = type ?? ''
+        ..page = page ?? 0
+        ..pageSize = pageSize ?? 0,
+    );
+    return response.histories.map((e) => History.fromProto(e)).toList();
+  }
+
+  static Future<List<History>> getHistoryByPackageAndDetailUrl(
+    String package,
+    String detailUrl,
+  ) async {
+    final response = await client.getHistoryByPackageAndDetailUrl(
+      proto.GetHistoryByPackageAndDetailUrlRequest()
+        ..package = package
+        ..detailUrl = detailUrl,
+    );
+    return response.history.map((e) => History.fromProto(e)).toList();
+  }
+
+  static Future<void> putHistory(History history) async {
+    await client.putHistory(
+      proto.PutHistoryRequest()..history = history.toProto(),
+    );
+  }
+
+  static Future<void> deleteHistoryByPackageAndUrl(
+    String package,
+    String url,
+  ) async {
+    await client.deleteHistoryByPackageAndUrl(
+      proto.DeleteHistoryByPackageAndUrlRequest()
+        ..package = package
+        ..url = url,
+    );
+  }
+
+  static Future<void> deleteAllHistory() async {
+    await client.deleteAllHistory(proto.DeleteAllHistoryRequest());
+  }
+
+  // Helper methods for compatibility
+  static Future<bool> isFavorite({
+    required String package,
+    required String url,
+  }) async {
+    final fav = await getFavoriteByPackageAndUrl(package, url);
+    return fav != null;
+  }
+
+  static Future<List<Favorite>> getFavoritesByType({
+    ExtensionType? type,
+    int? limit,
+  }) async {
+    final all = await getAllFavorite();
+    var filtered = type == null
+        ? all
+        : all.where((f) => f.type == type.toString().split('.').last).toList();
+    filtered.sort((a, b) => b.date.compareTo(a.date));
+    if (limit != null && filtered.length > limit) {
+      filtered = filtered.sublist(0, limit);
+    }
+    return filtered;
+  }
+
+  static Future<List<History>> getHistorysFiltered({
+    String? type,
+    DateTime? beforeDate,
+    int? page,
+    int? pageSize,
+  }) async {
+    final response = await client.getHistorysFiltered(
+      proto.GetHistorysFilteredRequest()
+        ..type = type ?? ''
+        ..beforeDate = beforeDate?.toIso8601String() ?? ''
+        ..page = page ?? 0
+        ..pageSize = pageSize ?? 0,
+    );
+    return response.histories.map((e) => History.fromProto(e)).toList();
+  }
+
+  static Future<List<FavoriteGroup>> getFavoriteGroupsByFavorite(
+    String package,
+    String url,
+  ) async {
+    final response = await client.getFavoriteGroupsByFavorite(
+      proto.GetFavoriteGroupsByFavoriteRequest()
+        ..package = package
+        ..url = url,
+    );
+    return response.groups.map((e) => FavoriteGroup.fromProto(e)).toList();
+  }
+
+  static Future<void> deleteFavorite(String url, String package) async {
+    await client.deleteFavorite(
+      proto.DeleteFavoriteRequest()
+        ..url = url
+        ..package = package,
+    );
+    logger.info('deleteFavorite $url $package');
+  }
+}

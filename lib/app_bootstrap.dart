@@ -1,0 +1,552 @@
+import 'package:miru_alpha/utils/update/update_service.dart';
+
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:miru_alpha/utils/core/i18n.dart';
+import 'package:forui/forui.dart';
+import 'package:fvp/fvp.dart';
+import 'package:macos_window_utils/macos/ns_window_button_type.dart';
+import 'package:macos_window_utils/window_manipulator.dart';
+import 'package:miru_alpha/miru_core/core.dart';
+import 'package:miru_alpha/model/extension_meta_data.dart';
+import 'package:miru_alpha/provider/application_controller_provider.dart';
+import 'package:miru_alpha/provider/app_update_provider.dart';
+import 'package:miru_alpha/ui/features/setting/widget/update_prompt_listener.dart';
+import 'package:miru_alpha/provider/backend_connection_provider.dart';
+import 'package:miru_alpha/utils/store/storage_index.dart';
+import 'package:miru_alpha/utils/store/bundled_sources.dart';
+import 'package:miru_alpha/ui/core/widget/skin_pack_scope.dart';
+import 'package:miru_alpha/utils/theme/theme.dart';
+import 'package:miru_alpha/miru_core/event_service.dart';
+import 'package:miru_alpha/provider/extension_page_notifier_provider.dart';
+import 'package:miru_alpha/utils/core/log.dart';
+import 'package:miru_alpha/utils/core/system_ui.dart';
+import 'package:miru_alpha/utils/download/ffmpeg_util.dart';
+import 'package:miru_alpha/utils/update/update_installer.dart';
+import 'package:miru_alpha/utils/http/request.dart';
+import 'package:miru_alpha/utils/router/router_util.dart';
+import 'package:miru_alpha/ui/core/core/toast.dart';
+import 'package:miru_alpha/ui/core/error.dart';
+import 'package:volume_controller/volume_controller.dart';
+import 'package:window_manager/window_manager.dart';
+
+/// Runs the whole app: widget-binding init, window setup, core services and
+/// the router.
+///
+/// The widget binding is INJECTED via [ensureBinding] so this file carries no
+/// marionette imports: the release entry (`lib/main.dart`) passes
+/// `WidgetsFlutterBinding.ensureInitialized`, and the debug-only entry
+/// (`lib/main_debug.dart`, the only file allowed to import
+/// `marionette_flutter`/`marionette_logging`) passes the marionette binding.
+/// That keeps both packages out of the release compile graph entirely —
+/// a `if (kDebugMode)` conditional import does NOT do this: only
+/// `dart.library.*` conditions are honoured, everything else resolves to the
+/// default branch, so the previous self-referencing conditional imported the
+/// real packages into every build.
+
+/// Errors that reach the global handlers but must never toast — they are
+/// still logged/recorded below. The noisy ones are `StateError`s, rendered
+/// "Bad state: ...": extended_image pushes a failed network load through the
+/// image stream as `StateError('Failed to load <url>.')` once per retry
+/// (and [ImageWidget] already renders that failure as its error child), and
+/// Riverpod's "Using ref when a widget is about to or has been unmounted"
+/// spams the same signature. Any "Bad state:" error is framework noise of
+/// that kind, so the whole signature is silenced for the toast.
+bool _isNoisyBadStateError(Object error) {
+  if (error.toString().contains('Bad state:')) return true;
+  if (error is StateError) {
+    final message = error.message.toString();
+    return message.startsWith('Failed to load') ||
+        message.contains('is an empty file') ||
+        message.startsWith('User cancel request');
+  }
+  return false;
+}
+
+Future<void> runMiruApp({required void Function() ensureBinding}) async {
+  runZonedGuarded<void>(
+    () async {
+      ensureBinding();
+      await MiruDirectory.ensureInitialized();
+      MiruLog.ensureInitialized();
+
+      // A build an earlier launch prepared is applied here, before the window
+      // exists: the archive was unpacked next to the install when the download
+      // finished, so the swap is two renames and the new process starts
+      // itself. The user sees nothing — the old window never appears, and the
+      // new one comes up on the new build. When nothing is waiting (the usual
+      // case) this returns immediately and the launch continues normally.
+      //
+      // It runs before any file the old build might hold open is touched, and
+      // before the window is created, so no frame of the outdated app is
+      // ever shown. On Windows the swap is queued to run the moment this pid
+      // exits, so it is equally happy here.
+      if (UpdateService.productionUpdatesEnabled &&
+          UpdateInstaller.appliesItself) {
+        await UpdateInstaller.applyPendingUpdate();
+      }
+
+      bool errPrint(
+        Object error,
+        StackTrace stack, [
+        String source = 'platform-dispatcher',
+      ]) {
+        if (!_isNoisyBadStateError(error)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            showSimpleToast(error.toString());
+          });
+        }
+        MiruLog.recordCrash(error, stack, source: source);
+        logger.severe('Uncaught error [$source]: $error');
+        logger.severe(stack.toString());
+        return false;
+      }
+
+      Widget errFunc(FlutterErrorDetails details) {
+        errPrint(
+          details.exception,
+          details.stack ?? StackTrace.empty,
+          'flutter-error',
+        );
+        return ErrorDisplay(
+          err: details.exception,
+          stack: details.stack ?? StackTrace.current,
+        );
+      }
+
+      void bindErrorWidget() {
+        if (kDebugMode) return;
+        ErrorWidget.builder = errFunc;
+        FlutterError.onError = errFunc;
+        PlatformDispatcher.instance.onError = errPrint;
+      }
+
+      bindErrorWidget();
+      if (!(Platform.isAndroid || Platform.isIOS || kIsWeb)) {
+        try {
+          final window = WindowManager.instance.getCurrent();
+          if (window != null) {
+            // Desktop launches start desktop-sized (the original default) in
+            // every mode — the window is breakpoint-driven (forui `sm` 640 /
+            // `lg` 1024) and freely resizable down to the phone-ish floor, so
+            // the mobile layout is one drag away; the launch size never fakes
+            // a phone viewport. (window_manager 0.7: no WindowOptions /
+            // waitUntilReadyToShow anymore — the engine's window already
+            // exists, so configure it directly. `skipTaskbar: false` was the
+            // platform default and 0.7 has no window-background option; the
+            // theme paints it.)
+            window.titleBarStyle = TitleBarStyle.hidden;
+            window.setSize(const Size(1300, 800).toNative(), false);
+            window.minimumSize = const Size(400, 480).toNative();
+            window.center();
+            window.show();
+            window.focus();
+          }
+        } on ArgumentError {
+          // No native window library in this process (widget tests): leave
+          // the harness's window alone.
+        }
+      }
+      FFMpegUtils.ensureInitialized();
+      // Housekeeping for the in-place desktop updater: drop the backup and
+      // staged folders an earlier update left behind (a build that was
+      // replaced but never launched, or a download that died before the swap).
+      // Fire-and-forget and desktop-only — it touches nothing but the
+      // updater's own folders, and it must never delay the window.
+      if (!kIsWeb && (Platform.isLinux || Platform.isWindows)) {
+        unawaited(UpdateInstaller.pruneUpdateBackups());
+      }
+      Core.loadConfig();
+      // Only seed the app's default directory. Respect users who have
+      // explicitly configured Core to read a different extension store.
+      if (Core.configData?['extensionPath'] == Core.getExtensionPath) {
+        try {
+          await seedBundledSources(
+            Directory(Core.getExtensionPath),
+            loadAsset: rootBundle.loadString,
+          );
+        } on Exception catch (error, stack) {
+          // Failure to install a sample source must not block the player.
+          logger.warning('Unable to add bundled sources', error, stack);
+        }
+      }
+      // Seed synchronous defaults so the first frames resolve theme/language
+      // while the backend connection gate is still pending — the init page
+      // that used to absorb this window is gone. The session file (the
+      // appearance keys' local copy, next to the DB) then overrides the
+      // defaults with the user's last-known values, and the gate overlays
+      // the authoritative DB values once the core answers.
+      MiruSettings.seedDefaults();
+      MiruSettings.loadSessionSettings();
+      MiruRequest.ensureInitalized(host: Core.baseUrl);
+      if (Platform.isMacOS) {
+        await WindowManipulator.initialize(enableWindowDelegate: true);
+        await WindowManipulator.addToolbar();
+        await WindowManipulator.overrideStandardWindowButtonPosition(
+          buttonType: NSWindowButtonType.closeButton,
+          offset: const Offset(15, 18),
+        );
+        await WindowManipulator.overrideStandardWindowButtonPosition(
+          buttonType: NSWindowButtonType.miniaturizeButton,
+          offset: const Offset(35, 18),
+        );
+      }
+
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+      // Status bar hidden app-wide; the bottom system navigation bar stays.
+      // Video fullscreen temporarily hides both (immersiveSticky) and every
+      // exit path restores this exact mode (mobile_watch_page.dart) so the
+      // status bar never comes back on other pages.
+      AppSystemUi.restore();
+      // The init page is gone: the app mounts immediately and the backend
+      // connection gate (backendConnectionProvider) holds data operations —
+      // surfaces show their per-op loading states and the home/desktop title
+      // bars render the connecting status until the core answers.
+      runApp(
+        ProviderScope(retry: (retryCount, error) => null, child: RootWidget()),
+      );
+    },
+    (error, stack) {
+      if (!MiruLog.hasInit) {
+        MiruLog.defaultError(error, stack);
+      }
+      if (!_isNoisyBadStateError(error)) {
+        showSimpleToast(error.toString());
+      }
+      MiruLog.recordCrash(error, stack, source: 'run-zoned');
+      logger.severe('Uncaught error [run-zoned]: $error');
+      logger.severe(stack.toString());
+    },
+  );
+}
+
+/// App root: picks the presentation synchronously — the phone frame is a
+/// DEBUG development presentation (user directive, like the MCP/marionette
+/// debug binding): debug builds on desktop render the mobile UI in the
+/// 412×915 frame; release/profile builds render the app natively — the frame
+/// never ships. Touch builds (Android/iOS) always render natively.
+///
+/// There is no init screen: [App] mounts immediately and backend-dependent
+/// work waits on the connection gate instead.
+class RootWidget extends StatelessWidget {
+  const RootWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (kDebugMode && !(Platform.isAndroid || Platform.isIOS)) {
+      return MiruMobilePreviewShell(child: const App());
+    }
+    return const App();
+  }
+}
+
+class App extends ConsumerStatefulWidget {
+  const App({super.key});
+  @override
+  createState() => _App();
+}
+
+class _App extends ConsumerState<App> with WidgetsBindingObserver {
+  Timer? _statusBarRehideTimer;
+
+  @override
+  void initState() {
+    VolumeController.instance.showSystemUI = false;
+    WidgetsBinding.instance.addObserver(this);
+    super.initState();
+    registerWith(
+      options: {
+        'platforms': ['windows', 'linux', 'macos', 'android', 'ios'],
+        'video.decoders': ['D3D11', 'NVDEC', 'FFmpeg'],
+        'player': {'buffer': '2000+600000'},
+        // mdk's own verbosity: 'all' (fvp's default) emits a per-frame
+        // "VideoFrame@… to be destroyed is not rendered" FINEST line while a
+        // hidden surface plays — ~15 lines/s into miru.log. 'debug' keeps
+        // the FFmpeg/hls diagnostics (fvp maps them to FINE) and drops only
+        // the per-frame spam. fvp applies the 'global' options AFTER its
+        // own hardcoded log:"all", so this wins.
+        'global': {'log': 'debug'},
+      },
+    );
+
+    // The event stream is a backend operation like any other: start it once
+    // the connection gate confirms the core answers. Starting it during the
+    // connecting window only floods the log with connection-refused retries
+    // (initial-state + event-stream errors every 5s) while the core is still
+    // coming up.
+    Future.microtask(() async {
+      await ref.read(backendConnectionProvider.future);
+      miruEventService.start();
+    });
+
+    // Auto-update (settings.labels.auto_update): one silent check per launch,
+    // after the backend gate so the network is up. Silent means the settings
+    // banner stays hidden unless a newer build exists — a launch with no news
+    // must not nag.
+    if (AppUpdate.autoCheckEnabled) {
+      Future.microtask(() async {
+        await ref.read(backendConnectionProvider.future);
+        await ref.read(appUpdateProvider.notifier).check();
+      });
+    }
+    miruEventService.extensionStream.listen((data) {
+      ref
+          .read(extensionPageProvider.notifier)
+          .setMetaData(data.map((e) => ExtensionMeta.fromProto(e)).toList());
+    });
+
+    // Kick the global backend gate: it drives the connecting -> online
+    // lifecycle every surface reads (title bars, data gates). Deferred so
+    // provider access never lands during the widget build phase. The
+    // microtask above already reads the provider's future, which starts it.
+  }
+
+  void poll(dynamic data) {
+    if (data is List<ExtensionMeta>) {
+      ref.read(extensionPageProvider.notifier).setMetaData(data);
+    } else if (data is String) {
+      logger.info('Error received: $data');
+    } else {
+      logger.info('Unknown data type received: $data');
+    }
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    // Re-derive the Forui theme so that, in 'system' mode, an OS light/dark
+    // switch updates every colour-dependent widget style, not just Material's.
+    ref
+        .read(applicationControllerProvider.notifier)
+        .onPlatformBrightnessChanged();
+    super.didChangePlatformBrightness();
+  }
+
+  @override
+  void didChangeMetrics() {
+    // Android: pulling down the notification shade (or any inset change —
+    // keyboard, rotation) re-shows the status bar and the app's hidden state
+    // is NOT re-asserted when the shade closes, so the bar stays on every
+    // page. Re-apply the hidden mode once things settle: restarting the timer
+    // on every change dismisses the bar one second after the last one.
+    if (AppSystemUi.surfaceOwned) return;
+    _statusBarRehideTimer?.cancel();
+    _statusBarRehideTimer = Timer(const Duration(seconds: 1), () {
+      AppSystemUi.restore();
+    });
+    super.didChangeMetrics();
+  }
+
+  @override
+  void dispose() {
+    _statusBarRehideTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ref.watch(applicationControllerProvider);
+    return MaterialApp.router(
+      showPerformanceOverlay: kProfileMode,
+      supportedLocales: FLocalizations.supportedLocales,
+      key: ValueKey(c.language),
+      // FToaster hosts every showFToast(...); without it a toast throws, and
+      // one fired from the error handler re-enters that handler every frame.
+      builder: (context, child) => SkinPackScope(
+        pack: c.skinPack,
+        child: FTheme(
+          data: c.themeData,
+          child: FToaster(
+            // Above the router: sees the update state for every route, and
+            // raises the launch prompt when a newer build is found.
+            child: UpdatePromptListener(child: child!),
+          ),
+        ),
+      ),
+      themeMode: c.themeMode,
+      title: 'Meowoo',
+      localizationsDelegates: [
+        I18nUtils.flutterI18nDelegate,
+        ...GlobalMaterialLocalizations.delegates,
+      ],
+      routerConfig: RouterUtil.appRouter,
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+/// The DEBUG desktop presentation (user directive, like the MCP debug
+/// binding): the PHONE UI, centered in a 412×915 frame — an
+/// Android-emulator-style window inside the real desktop window, which
+/// itself is never resized or re-initialized. **Ctrl+Shift+P**
+/// swaps portrait (412x915) <-> landscape (915x412). **Ctrl+Shift+D**
+/// bypasses the frame: the child renders full-bleed at the real
+/// window size, so the width-based breakpoints (forui `lg` 1024) reach the
+/// superseded desktop layouts (sidebar shell, desktop player) for
+/// development. RELEASE/PROFILE BUILDS NEVER WRAP: the bootstrap only
+/// mounts this shell under `kDebugMode`, so shipped desktop/touch builds
+/// render the app natively with window/platform-resolved theming. The
+/// handler
+/// only OBSERVES the combos (always returns false), so it never consumes
+/// events a real keyboard owner needs; plain typing never matches them. The
+/// theme resolves its FORUI MOBILE (touch) variant against the frame width —
+/// the desktop window's size must not leak desktop design tokens into the
+/// phone frame; the desktop passthrough restores real-window resolution
+/// (`setMobilePreviewWidth(null)`).
+class MiruMobilePreviewShell extends ConsumerStatefulWidget {
+  const MiruMobilePreviewShell({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  ConsumerState<MiruMobilePreviewShell> createState() =>
+      _MiruMobilePreviewShellState();
+}
+
+class _MiruMobilePreviewShellState
+    extends ConsumerState<MiruMobilePreviewShell> {
+  static const _modes = [Size(412, 915), Size(915, 412)];
+
+  int _mode = 0;
+
+  /// Debug-only desktop passthrough: bypass the phone frame and render the
+  /// child full-bleed at the real window size (desktop layouts reachable).
+  bool _desktop = false;
+
+  bool _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    final combo =
+        HardwareKeyboard.instance.isControlPressed &&
+        HardwareKeyboard.instance.isShiftPressed;
+    if (combo && event.logicalKey == LogicalKeyboardKey.keyP) {
+      setState(() => _mode = (_mode + 1) % _modes.length);
+      _syncPreviewWidth();
+    }
+    if (combo && kDebugMode && event.logicalKey == LogicalKeyboardKey.keyD) {
+      setState(() => _desktop = !_desktop);
+      _syncPreviewWidth();
+    }
+    return false;
+  }
+
+  /// Theme width follows the mode: the frame's width in the phone preview
+  /// (touch tokens), `null` in the desktop passthrough (real-window
+  /// resolution -> desktop tokens at the 1300px launch window).
+  void _syncPreviewWidth() {
+    ref
+        .read(applicationControllerProvider.notifier)
+        .setMobilePreviewWidth(_desktop ? null : _modes[_mode].width);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+    // The frame is the DEFAULT desktop UI: resolve the theme against the
+    // frame width from the first build (deferred — provider writes during
+    // the tree build phase are rejected).
+    ThemeUtils.mobilePreviewWidth = _modes[_mode].width;
+    Future.microtask(() {
+      ref
+          .read(applicationControllerProvider.notifier)
+          .setMobilePreviewWidth(_modes[_mode].width);
+    });
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final real = MediaQuery.of(context);
+    // The structure NEVER changes across mode switches: the child stays at
+    // the same tree position behind the same widget chain, so toggling does
+    // not unmount/remount it (an App remount re-runs initState and fires its
+    // stream listeners against a disposed element). The frame takes a BOUNDED
+    // height (label space subtracted) so the FittedBox actually scales the
+    // phone down instead of overflowing a shorter window — Column children
+    // get unbounded main-axis constraints, which is why the bare FittedBox
+    // never scaled.
+    return LayoutBuilder(
+      builder: (context, window) {
+        // Desktop passthrough: the frame IS the real window — full-bleed
+        // 1:1, so the width breakpoints (forui `lg` 1024) see the desktop
+        // size and the desktop layouts render.
+        final frameSize = _desktop
+            ? Size(window.maxWidth, window.maxHeight)
+            : _modes[_mode];
+        return ColoredBox(
+          color: const Color(0xFF09090B),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Above MaterialApp there is no Directionality — the label
+              // brings its own. Empty placeholder slots in desktop mode so
+              // the frame slot (and the child's element chain) never moves.
+              if (_desktop)
+                const SizedBox.shrink()
+              else
+                Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: Text(
+                    'MIRU MOBILE ${frameSize.width.toInt()}x'
+                    '${frameSize.height.toInt()} (Ctrl+Shift+P: swap'
+                    '${kDebugMode ? ', Ctrl+Shift+D: desktop' : ''})',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                ),
+              if (_desktop)
+                const SizedBox.shrink()
+              else
+                const SizedBox(height: 6),
+              // The phone frame height is clamped to the available window
+              // height (minus the label) so it never overflows — no
+              // FittedBox, no layout-vs-paint gap. On a tall window the
+              // phone is its natural 915; on a short window it shrinks to
+              // fit (e.g. 834). The app is responsive to the width (412), so
+              // it renders correctly at any height.
+              Builder(
+                builder: (context) {
+                  final frameH = _desktop
+                      ? window.maxHeight
+                      : (window.maxHeight - 24.0).clamp(
+                          0.0,
+                          _modes[_mode].height,
+                        );
+                  final frameSize = _desktop
+                      ? Size(window.maxWidth, window.maxHeight)
+                      : Size(_modes[_mode].width, frameH);
+                  return SizedBox(
+                    width: _desktop ? window.maxWidth : frameSize.width,
+                    height: frameSize.height,
+                    child: MediaQuery(
+                      data: real.copyWith(
+                        size: frameSize,
+                        padding: EdgeInsets.zero,
+                        viewInsets: EdgeInsets.zero,
+                      ),
+                      child: widget.child,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

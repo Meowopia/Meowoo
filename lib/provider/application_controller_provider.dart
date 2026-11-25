@@ -1,0 +1,327 @@
+import 'package:material_ui/material_ui.dart';
+import 'package:forui/theme.dart';
+import 'package:miru_alpha/utils/theme/theme.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../utils/setting_dir_index.dart';
+import '../utils/theme/skin_library.dart';
+import '../utils/theme/skin_pack.dart';
+part 'application_controller_provider.g.dart';
+
+class ApplicationState {
+  final String themeText;
+  final String baseColor;
+  final String primaryColor;
+  final FThemeData themeData;
+  final ThemeMode themeMode;
+  final bool isMobileTitleOnTop;
+  final String language;
+  final SkinPack? skinPack;
+
+  /// Strength (0..1) of the per-base `background`/`card` tint in light mode.
+  /// 0 = faithful to forui_cli (pure white); higher = stronger base hue.
+  final double tintStrength;
+  ApplicationState({
+    required this.themeText,
+    required this.baseColor,
+    required this.primaryColor,
+    required this.themeData,
+    required this.themeMode,
+    required this.language,
+    this.isMobileTitleOnTop = true,
+    this.tintStrength = 0.5,
+    this.skinPack,
+  });
+
+  ApplicationState copyWith({
+    String? themeText,
+    String? baseColor,
+    String? primaryColor,
+    FThemeData? themeData,
+    ThemeMode? themeMode,
+    bool? isMobileTitleOnTop,
+    String? language,
+    double? tintStrength,
+    SkinPack? skinPack,
+    bool clearSkinPack = false,
+  }) {
+    return ApplicationState(
+      themeData: themeData ?? this.themeData,
+      themeText: themeText ?? this.themeText,
+      baseColor: baseColor ?? this.baseColor,
+      primaryColor: primaryColor ?? this.primaryColor,
+      themeMode: themeMode ?? this.themeMode,
+      isMobileTitleOnTop: isMobileTitleOnTop ?? this.isMobileTitleOnTop,
+      language: language ?? this.language,
+      tintStrength: tintStrength ?? this.tintStrength,
+      skinPack: clearSkinPack ? null : skinPack ?? this.skinPack,
+    );
+  }
+}
+
+/// Whether the mobile title bar may be forced to sit above the app bar.
+///
+/// **Temporarily disabled.** The layout that honoured this flag is gone, so
+/// [ApplicationState.isMobileTitleOnTop] is read nowhere outside this provider
+/// and the setting toggle — the preference currently changes nothing on screen.
+/// That is deliberate rather than an oversight, so the flag is gated here: the
+/// setting and its shipped default (`true`) are left untouched, and this
+/// constant is the single place to flip to bring the behaviour back.
+const bool kMobileTitleOnTopEnabled = true;
+
+@Riverpod(keepAlive: true)
+class ApplicationController extends _$ApplicationController {
+  @override
+  ApplicationState build() => _stateFromSettings();
+
+  /// Derives [ApplicationState] from the settings cache. Used by [build] and
+  /// by [reloadFromSettings] (the backend gate re-applies it once the user's
+  /// persisted settings replace the bootstrap defaults).
+  ApplicationState _stateFromSettings() {
+    final pack = skinPackById(
+      MiruSettings.getSetting<String>(SettingKey.skinPackId) ?? '',
+    );
+    final themeText = MiruSettings.getSettingSync<String>(SettingKey.theme);
+    final baseColor =
+        pack?.baseColor ??
+        MiruSettings.getSettingSync<String>(SettingKey.baseColor);
+    final primaryColor =
+        pack?.primaryColor ??
+        MiruSettings.getSettingSync<String>(SettingKey.accentColor);
+    final isMobileTitleOnTop = MiruSettings.getSettingSync<bool>(
+      SettingKey.mobiletitleIsonTop,
+    );
+    final language = MiruSettings.getSettingSync<String>(SettingKey.language);
+    final tintStrength = MiruSettings.getSettingSync<double>(
+      SettingKey.baseColorTintStrength,
+    );
+    final themeData = currentThemeData(
+      themeText,
+      baseColor,
+      primaryColor,
+      tintStrength: tintStrength,
+    );
+
+    return ApplicationState(
+      skinPack: pack,
+      themeText: themeText,
+      baseColor: baseColor,
+      primaryColor: primaryColor,
+      themeData: themeData,
+      themeMode: _themeModeFromText(themeText),
+      // Gated so the disablement is a single deliberate switch: while
+      // `kMobileTitleOnTopEnabled` is false the stored preference is still
+      // carried through untouched — the toggle keeps showing what the user
+      // chose, and the default stays `true` — but nothing acts on it.
+      isMobileTitleOnTop: kMobileTitleOnTopEnabled && isMobileTitleOnTop,
+      language: language,
+      tintStrength: tintStrength,
+    );
+  }
+
+  /// Re-reads every appearance/language value from the settings cache and
+  /// publishes a fresh [ApplicationState]. Called by the backend connection
+  /// gate once the user's persisted settings finish loading.
+  void reloadFromSettings() => state = _stateFromSettings();
+
+  static ThemeMode _themeModeFromText(String text) => switch (text) {
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
+
+  FThemeData currentThemeData(
+    String themeText,
+    String baseColor,
+    String primaryColor, {
+    double tintStrength = 0.5,
+  }) {
+    // Pick Forui theme data by 2-dimensional base + primary and brightness.
+    //
+    // `themeText` may be 'light', 'dark', or 'system'. For 'system' we resolve
+    // the *actual* platform brightness so the Forui theme (which drives every
+    // `FTheme` descendant's colors, typography and widget styles) stays in sync
+    // with `MaterialApp.themeMode` instead of always falling back to dark.
+    final isLight = switch (themeText) {
+      'light' => true,
+      'dark' => false,
+      _ =>
+        WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+            Brightness.light,
+    };
+    final theme = isLight
+        ? ThemeUtils.resolveTheme(
+            baseColor,
+            primaryColor,
+            tintStrength: tintStrength,
+          )
+        : ThemeUtils.resolveDarkTheme(
+            baseColor,
+            primaryColor,
+            tintStrength: tintStrength,
+          );
+    return ThemeUtils.getThemeData(theme);
+  }
+
+  /// Recomputes [ApplicationState.themeData] from the current base/primary/mode.
+  /// Call this whenever any theme input changes so *all* `FTheme` descendants
+  /// rebuild with a freshly-derived [FThemeData].
+  void _refreshThemeData() {
+    state = state.copyWith(
+      themeData: currentThemeData(
+        state.themeText,
+        state.baseColor,
+        state.primaryColor,
+        tintStrength: state.tintStrength,
+      ),
+    );
+  }
+
+  /// Debug mobile preview hook: while [width] is non-null the theme resolves
+  /// its touch/desktop variant against [width] instead of the real window,
+  /// so a desktop preview of the phone layout renders FORUI MOBILE tokens
+  /// (the touch design), not the desktop ones. `null` restores the real
+  /// window-driven resolution.
+  void setMobilePreviewWidth(double? width) {
+    ThemeUtils.mobilePreviewWidth = width;
+    _refreshThemeData();
+  }
+
+  /// Re-resolves the theme when the OS brightness changes while in 'system'
+  /// mode. Wired from [App] via `didChangePlatformBrightness`.
+  void onPlatformBrightnessChanged() {
+    if (state.themeText == 'system') {
+      _refreshThemeData();
+    }
+  }
+
+  void changeBaseColor(String color) {
+    _clearSkinPack();
+    MiruSettings.setSettingSync(SettingKey.baseColor, color);
+    final baseColor = selectableBaseColorNames.contains(color) ? color : 'zinc';
+    state = state.copyWith(
+      baseColor: baseColor,
+      clearSkinPack: true,
+      themeData: currentThemeData(
+        state.themeText,
+        baseColor,
+        state.primaryColor,
+      ),
+    );
+  }
+
+  void changePrimaryColor(String color) {
+    _clearSkinPack();
+    MiruSettings.setSettingSync(SettingKey.accentColor, color);
+    final primaryColor = primaryColorNames.contains(color) ? color : 'none';
+    state = state.copyWith(
+      primaryColor: primaryColor,
+      clearSkinPack: true,
+      themeData: currentThemeData(
+        state.themeText,
+        state.baseColor,
+        primaryColor,
+      ),
+    );
+  }
+
+  /// Applies a curated skin while preserving the current light/dark mode.
+  void applySkin(String skinId) {
+    final skin = miruSkinById(skinId);
+    if (skin == null) return;
+    _clearSkinPack();
+    MiruSettings.setSettingSync(SettingKey.baseColor, skin.baseColor);
+    MiruSettings.setSettingSync(SettingKey.accentColor, skin.primaryColor);
+    state = state.copyWith(
+      baseColor: skin.baseColor,
+      primaryColor: skin.primaryColor,
+      clearSkinPack: true,
+      themeData: currentThemeData(
+        state.themeText,
+        skin.baseColor,
+        skin.primaryColor,
+        tintStrength: state.tintStrength,
+      ),
+    );
+  }
+
+  void _clearSkinPack() {
+    if (state.skinPack != null) {
+      MiruSettings.setSettingSync(SettingKey.skinPackId, '');
+    }
+  }
+
+  /// Applies the whole built-in visual pack. Previewing never calls this.
+  /// No theme mode, playback or navigation settings are changed.
+  bool applySkinPack(String id) {
+    final pack = skinPackById(id);
+    if (pack == null) return false;
+    if (!MiruSettings.setAppearancePack(
+      pack.id,
+      pack.baseColor,
+      pack.primaryColor,
+    )) {
+      return false;
+    }
+    state = state.copyWith(
+      skinPack: pack,
+      baseColor: pack.baseColor,
+      primaryColor: pack.primaryColor,
+      themeData: currentThemeData(
+        state.themeText,
+        pack.baseColor,
+        pack.primaryColor,
+        tintStrength: state.tintStrength,
+      ),
+    );
+    return true;
+  }
+
+  /// Updates the per-base light-mode `background`/`card` tint strength (0..1).
+  /// 0 disables the tint (pure white, faithful to forui_cli); 1 fully applies
+  /// the base hue. Persists the value and re-derives [ApplicationState.themeData]
+  /// so the change is visible everywhere immediately.
+  void changeTintStrength(double strength) {
+    final clamped = ThemeUtils.clampTintStrength(strength);
+    MiruSettings.setSettingSync(
+      SettingKey.baseColorTintStrength,
+      clamped.toString(),
+    );
+    state = state.copyWith(
+      tintStrength: clamped,
+      themeData: currentThemeData(
+        state.themeText,
+        state.baseColor,
+        state.primaryColor,
+        tintStrength: clamped,
+      ),
+    );
+  }
+
+  void changeTheme(String mode) {
+    MiruSettings.setSettingSync(SettingKey.theme, mode);
+    final themeMode = (mode == 'system')
+        ? ThemeMode.system
+        : (mode == 'light')
+        ? ThemeMode.light
+        : ThemeMode.dark;
+    state = state.copyWith(
+      themeMode: themeMode,
+      themeText: mode,
+      themeData: currentThemeData(mode, state.baseColor, state.primaryColor),
+    );
+  }
+
+  void updateMobileTitleOnTop(bool isOnTop) {
+    MiruSettings.setSettingSync(
+      SettingKey.mobiletitleIsonTop,
+      isOnTop.toString(),
+    );
+    state = state.copyWith(isMobileTitleOnTop: isOnTop);
+  }
+
+  void changeLanguage(String language) {
+    MiruSettings.setSettingSync(SettingKey.language, language);
+    state = state.copyWith(language: language);
+  }
+}

@@ -1,0 +1,174 @@
+import java.io.FileInputStream
+import java.io.FileNotFoundException
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("kotlin-android")
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
+
+fun getApiKey(name:String): String? {
+    val fl = rootProject.file("key.properties")
+
+    if (fl.exists()) {
+        val properties = Properties()
+        properties.load(FileInputStream(fl))
+        return properties.getProperty(name)
+    } else {
+        return null
+    }
+}
+
+// key.properties (android/, gitignored) is the AUTHORITATIVE local signing
+// source; the environment is only a fallback (CI exports the same names and
+// has no key.properties). Environment-first made the signature depend on the
+// launching shell: a GUI VSCode launch never sources ~/.bashrc, so it fell
+// through to the debug config while a terminal build signed with the release
+// keystore. File-first signs both paths identically.
+val keystorePath = getApiKey("storeFile") ?: System.getenv("KEYSTORE") ?: "keystore.jks"
+val storeFileRef = file(keystorePath)
+val storePasswordRef: String? = getApiKey("storePassword") ?: System.getenv("KEYSTORE_PASSWORD")
+val keyAliasRef: String? = getApiKey("keyAlias") ?: System.getenv("KEY_ALIAS")
+val keyPasswordRef: String? = getApiKey("keyPassword") ?: System.getenv("KEY_PASSWORD")
+// Opt in to a single phone ABI. Unsigned assembly is only for local validation
+// or offline signing; the default release still requires the official key.
+val phoneArm64 = providers.gradleProperty("meowooPhoneArm64").orNull == "true"
+val unsignedPhoneAssembly = providers.gradleProperty("meowooUnsignedPhoneAssembly").orNull == "true"
+check(!unsignedPhoneAssembly || phoneArm64) { "Unsigned assembly requires the ARM64 phone target." }
+
+
+android {
+    namespace = "miru.alpha"
+    compileSdk = 36
+    ndkVersion = "28.2.13676358"
+
+    compileOptions {
+        // Updated to Java 17 to be compatible with plugin class files compiled with JDK 17.
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    // Updated to use the new Kotlin DSL. The `jvmToolchain` method configures the JVM target version.
+    kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        }
+    }
+
+    defaultConfig {
+        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        applicationId = "com.meowopia.meowoo"
+        // You can update the following values to match your application needs.
+        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        minSdk = 28
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+
+
+         ndk {
+            abiFilters.addAll(if (phoneArm64) listOf("arm64-v8a") else listOf("arm64-v8a", "armeabi-v7a", "x86_64"))
+        }
+
+        // Compressing on native lib is needed :(  or it will become 1.5 time of uncompressed size.
+        // Updated to use the new packaging DSL as packagingOptions is deprecated.
+        packaging {
+            jniLibs {
+                useLegacyPackaging = true
+                if (phoneArm64) excludes.addAll(listOf("**/armeabi-v7a/**", "**/x86/**", "**/x86_64/**"))
+            }
+        }
+    }
+
+     signingConfigs {
+        create("release") {
+            keyAlias = keyAliasRef
+            keyPassword = keyPasswordRef
+            storeFile = file(keystorePath)
+            storePassword = storePasswordRef
+        }
+    }
+
+    buildTypes {
+        release {
+            // A formal release must never silently use the debug key.
+            signingConfig = if (unsignedPhoneAssembly) null else signingConfigs.getByName("release")
+        }
+        debug {
+            // Local debug installs sign with the SAME release key (the
+            // key.properties keystore) so a debug APK upgrades over a
+            // release install and vice versa instead of dying with
+            // INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match.
+            // CI and fresh machines without key.properties keep the default
+            // debug keystore.
+            val releaseSigning = signingConfigs.findByName("release")
+            signingConfig = if (releaseSigning?.keyPassword != null) {
+                println("debug buildType: release key applied")
+                releaseSigning
+            } else {
+                println("debug buildType: default debug key applied")
+                signingConfigs.getByName("debug")
+            }
+        }
+    }
+    
+   splits {
+        abi {
+            isEnable = !phoneArm64
+            reset()
+            include("arm64-v8a", "x86_64", "armeabi-v7a")
+            isUniversalApk = true
+        }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+    }
+}
+
+flutter {
+    source = "../.."
+}
+
+// fvp's FindMDK.cmake links mdk's bundled libffmpeg.so into libfvp.so purely
+// so gradle packages it; mdk embeds FFmpeg statically and libfvp.so uses no
+// symbols from it (mdk dlopens only libass.so for subtitles, which stays).
+// Strip that dependency and drop the surplus file: ~8 MB per ABI, per APK.
+gradle.projectsEvaluated {
+    val fvp = rootProject.subprojects.find { it.name == "fvp" } ?: return@projectsEvaluated
+    fvp.tasks.matching { it.name.startsWith("buildCMake") }.configureEach {
+        doLast {
+            val patchelf = listOf("/usr/bin/patchelf", "patchelf").firstOrNull { p ->
+                try {
+                    ProcessBuilder(p, "--version").start().waitFor() == 0
+                } catch (_: Exception) {
+                    false
+                }
+            } ?: run {
+                println("patchelf not found: keeping mdk's bundled libffmpeg.so")
+                return@doLast
+            }
+            val buildDir = fvp.layout.buildDirectory.get().asFile
+            buildDir.walkTopDown().forEach { f ->
+                when {
+                    f.name == "libfvp.so" && f.path.contains("/obj/") -> {
+                        val rc = ProcessBuilder(
+                            patchelf, "--remove-needed", "libffmpeg.so", f.absolutePath,
+                        ).start().waitFor()
+                        if (rc == 0) {
+                            println("patchelf: dropped libffmpeg.so from ${f.relativeTo(buildDir)}")
+                        } else {
+                            println("patchelf failed on ${f.relativeTo(buildDir)} (rc=$rc)")
+                        }
+                    }
+                    f.name == "libffmpeg.so" -> {
+                        f.delete()
+                        println("removed surplus ${f.relativeTo(buildDir)}")
+                    }
+                }
+            }
+        }
+    }
+}

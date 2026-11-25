@@ -1,0 +1,40 @@
+name: widgetbook_workspace
+description: "Miru component catalog (Widgetbook workspace app)."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+  widgetbook: ^3.25.0
+  forui: ^0.28.0
+  # The app's material re-export (flutter/material is deprecated in this
+  # project) — declared directly because use-case files import it.
+  material_ui: any
+  # Pinned to the version the root app resolves: miru_alpha calls the
+  # `FilePicker.pickDirectory()` static added in 13.4.0, and the workspace's
+  # own resolution drifts to 13.3.3 unless it is held here.
+  file_picker: ^13.4.0
+  # Declared for the mirrored use-cases (screens under Riverpod/GoRouter);
+  # versions resolve through miru_alpha's own constraints.
+  hooks_riverpod: any
+  flutter_hooks: any
+  go_router: any
+  easy_refresh: any
+  miru_alpha:
+    path: ../
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  # Debug-only: lets the marionette CLI / MCP drive and SCREENSHOT the catalog
+  # (main_debug.dart does the same for the main app). Widgetbook is launched
+  # without it unless this is present, so keep it in dev deps only — release
+  # builds of the catalog never see it.
+  marionette_flutter: any
+  marionette_logging: any
+
+flutter:
+  uses-material-design: true

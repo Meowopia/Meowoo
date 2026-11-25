@@ -1,65 +1,18 @@
-<div align="center">
+# Meowoo 喵呜
 
-<img src="assets/brand/meowoo-logo-flat-centered.png" alt="Meowoo 喵呜 Logo" width="160" />
+Meowoo 是基于 Miru Alpha 的跨平台个人媒体客户端，用于播放视频、阅读漫画和小说，并管理收藏与历史。
 
-<h1>Meowoo · 喵呜</h1>
+## Android 手机首版
 
-<p><strong>把喜欢的故事，带到每一块屏幕。</strong></p>
-<p>跨设备私人影院 · 视频为主，也保留漫画与轻小说</p>
+- Android 9 或更新版本，ARM64。
+- 支持扩展源管理、少量公开演示内容、本地收藏和历史，以及基础 Jellyfin 接入。
+- Android 平板和 TV、iOS/iPadOS、Windows、macOS、Linux、原生鸿蒙属于产品目标，不等同于本次交付。
+- OO 登录、跨设备云存档和完整动态装扮暂未交付。
 
-<p>
-<a href="https://meowoo.meowopia.com/">官网</a> ·
-<a href="https://wiki.meowopia.com/meowoo/">Wiki</a> ·
-<a href="#features">功能</a> ·
-<a href="#platforms">平台</a> ·
-<a href="#download">获取应用</a>
-</p>
+安装包与验收状态以 [GitHub Releases](https://github.com/Meowopia/Meowoo/releases) 为准。
 
-</div>
+## 源码与许可
 
-Meowoo（喵呜）新版基于 [Miru Alpha](https://github.com/miru-project/miru-alpha) 开发，使用 Flutter / Dart，并内置 Core（源自 [miru-core](https://github.com/miru-project/miru-core)）运行来源扩展和处理媒体请求。新版优先做好私人片库、视频播放和跨设备续播。
+客户端基于 [Miru Alpha](https://github.com/miru-project/miru-alpha)，内置 [Miru Core](https://github.com/miru-project/miru-core)。请参阅 [上游与许可说明](UPSTREAM.md)及 [项目许可证](LICENSE)。
 
-> **开发预览**：新版尚未发布，当前公开代码仍为早期客户端。下表区分上游能力、Meowoo 的开发进度和发布范围。支持平台及使用说明以实际发布为准。
-
-<a id="features"></a>
-
-## 功能
-
-| 功能 | 新版状态 |
-| --- | --- |
-| 视频播放、漫画和轻小说阅读 | 上游已有能力，Meowoo 待验收 |
-| 来源扩展、搜索、详情和选集 | 上游已有能力，Meowoo 待验收；可用来源取决于具体扩展 |
-| 本地历史、收藏和下载管理 | 上游已有能力，Meowoo 待验收 |
-| Jellyfin 私人片库 | 初步接入已实现，待发布；片库浏览和基础播放仍待真实服务器与设备实测 |
-| 内置原创装扮 | 预览、应用与恢复默认已实现，待发布；各端仍待实机验收 |
-| 界面语言 | 以简体中文和 English 为基础；更多语言按翻译和验收进度交付 |
-| 原生 NAS、飞牛和 SMB 接入 | 规划中；NAS 或飞牛可作为自建 Jellyfin 的宿主 |
-| OO 登录、TV 配对与跨设备云存档 | 尚未交付 |
-
-应用不内置影视片库，计划先提供开放样片。界面语言和影片的字幕、音轨语言分别管理。
-
-<a id="platforms"></a>
-
-## 平台
-
-| 平台 | Meowoo 新版进度 |
-| --- | --- |
-| Android 手机 / 平板 | 上游已有版本，待 Meowoo 验收 |
-| Windows、Linux | 上游已有版本，待 Meowoo 验收 |
-| iOS / iPadOS、macOS | 上游已有平台工程，尚未交付 |
-| Android TV | 仍需独立适配与实机验收 |
-| HarmonyOS NEXT | 规划中，须原生适配 |
-
-Meowoo 当前不提供 Web 客户端。
-
-<a id="download"></a>
-
-## 获取应用
-
-**Meowoo 新版暂无正式安装包。** 请关注 [Meowoo Releases](https://github.com/Meowopia/Meowoo/releases)。Miru Alpha 的安装包属于上游项目；此仓库早期代码的构建方式也不适用于新版。
-
-## 反馈与致谢
-
-欢迎通过 [GitHub Issues](https://github.com/Meowopia/Meowoo/issues) 提交建议或报告问题。反馈时请附版本、设备、系统和复现步骤，并从截图或日志中移除账号凭据与个人信息。
-
-感谢 Miru Alpha 与 miru-core 提供新版基础，也感谢 [Animeko](https://github.com/open-ani/animeko)、[Kazumi](https://github.com/Predidit/Kazumi)、[AnimeFlow](https://github.com/openAnimeFlow/AnimeFlow)、[AniCh](https://github.com/Ls-Kr/AniCh) 和 [Izuko TV](https://github.com/GrahamZen/izuko-tv) 提供参考。新版客户端与内置核心分别保留上游 GPL-3.0 和 AGPL-3.0 许可；各第三方资源遵循各自许可。
+源码检出时使用 `git submodule update --init --recursive` 初始化 Core。构建工具版本见 [toolchain lock](tool/meowoo/upstream.lock.json)。

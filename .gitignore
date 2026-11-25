@@ -1,9 +1,88 @@
-.gradle/
-.kotlin/
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+Output/
+/android/app/.cxx
+
+/android/app/build
+/android/build
+*.aar
+*.jar
+
+/src/miru_core/linux/libmiru_core.h
+/src/miru_core/linux/libmiru_core.so
+/src/miru_core/windows/windows_x64
+/src/miru_core/windows/mingw64
+
+# Ignore ffmpeg libraries donwloaded from github
+/src/ffmpeg_merge/windows/ffmpeg-8.0-mingw-gcc-lite
+/src/ffmpeg_merge/linux/ffmpeg-8.0-linux-clang-lite-lto
+/src/ffmpeg_merge/android/ffmpeg-8.0-android-lite-lto
+
+*.zip
+*.tar.xz
+*.7z
+
+miru
+src/miru_core/miru-core
+flutter_*.png
+.agents
+.agent
+# Ignore mingw
+/src/miru_core/mingw64
+skills-lock.json
+src/miru_core/windows/miru_core.h
+src/miru_core/windows/miru_core.dll
+
+AGENTS.md
+# Widget Preview related
+.widget_preview/
+
+# Local Meowoo development artifacts
 .local-tools/
-**/build/
-local.properties
+android/key.properties
 *.jks
 *.keystore
-.idea/
-artifacts/
+android/.kotlin/

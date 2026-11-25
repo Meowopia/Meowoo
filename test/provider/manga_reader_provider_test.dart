@@ -1,0 +1,302 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart' show ProviderContainer;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:miru_alpha/model/model.dart';
+import 'package:miru_alpha/provider/watch/manga_reader_provider.dart';
+import 'package:miru_alpha/utils/store/miru_settings.dart';
+
+/// Tests run against a bare container: no widget tree, no backend.
+ProviderContainer _container() {
+  final container = ProviderContainer();
+  addTearDown(container.dispose);
+  return container;
+}
+
+void main() {
+  setUp(MiruSettings.seedDefaultsForTest);
+
+  group('MangaReaderState', () {
+    test('page, historyProgress and progress agree', () {
+      const first = MangaReaderState(totalPage: 10);
+      expect(first.page, 1);
+      expect(first.historyProgress, 1);
+      expect(first.progress, closeTo(0.1, 1e-9));
+
+      const last = MangaReaderState(totalPage: 10, itemPosition: 9);
+      expect(last.page, 10);
+      expect(last.progress, closeTo(1, 1e-9));
+
+      const empty = MangaReaderState();
+      expect(empty.page, 0);
+      expect(empty.progress, 0);
+    });
+
+    test('copyWith keeps every unspecified field', () {
+      const state = MangaReaderState(
+        totalPage: 4,
+        itemPosition: 2,
+        brightness: 40,
+        pageGap: 3,
+        invertColors: true,
+        keepScreenOn: false,
+        tapToTurnPage: false,
+        fitMode: MangaFitMode.original,
+        canvasBackground: MangaCanvasBackground.light,
+        hudVisible: false,
+      );
+      final copy = state.copyWith(itemPosition: 3);
+      expect(copy.itemPosition, 3);
+      expect(copy.brightness, 40);
+      expect(copy.pageGap, 3);
+      expect(copy.invertColors, isTrue);
+      expect(copy.keepScreenOn, isFalse);
+      expect(copy.tapToTurnPage, isFalse);
+      expect(copy.fitMode, MangaFitMode.original);
+      expect(copy.canvasBackground, MangaCanvasBackground.light);
+      expect(copy.hudVisible, isFalse);
+    });
+  });
+
+  group('MangaReader', () {
+    test('brightness defaults to 100 so no scrim is painted over the page', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+      final state = container.read(mangaReaderProvider);
+      expect(state.brightness, 100);
+      expect(state.brightness, kMangaBrightnessDefault);
+    });
+
+    test('build reads persisted settings and chapter size', () {
+      MiruSettings.setSettingSync(SettingKey.mangaBrightness, '40');
+      MiruSettings.setSettingSync(SettingKey.mangaFitMode, 'original');
+      MiruSettings.setSettingSync(SettingKey.mangaTapToTurnPage, 'false');
+
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+      final state = container.read(mangaReaderProvider);
+      expect(state.totalPage, 8);
+      expect(state.brightness, 40);
+      expect(state.fitMode, MangaFitMode.original);
+      expect(state.tapToTurnPage, isFalse);
+      // The reader rests on the page alone; the centre tap summons the HUD.
+      expect(state.hudVisible, isFalse);
+    });
+
+    test('setters clamp and persist', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      reader.setBrightness(5);
+      expect(
+        container.read(mangaReaderProvider).brightness,
+        kMangaBrightnessMin,
+      );
+      expect(
+        MiruSettings.getSettingSync<int>(SettingKey.mangaBrightness),
+        kMangaBrightnessMin,
+      );
+
+      reader.setBrightness(500);
+      expect(
+        container.read(mangaReaderProvider).brightness,
+        kMangaBrightnessMax,
+      );
+
+      reader.setPageGap(-4);
+      expect(container.read(mangaReaderProvider).pageGap, kMangaPageGapMin);
+      reader.setPageGap(999);
+      expect(container.read(mangaReaderProvider).pageGap, kMangaPageGapMax);
+      expect(
+        MiruSettings.getSettingSync<int>(SettingKey.mangaPageGap),
+        kMangaPageGapMax,
+      );
+    });
+
+    test('display settings persist through MiruSettings', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      reader.setFitMode(MangaFitMode.fitHeight);
+      reader.setCanvasBackground(MangaCanvasBackground.darkGray);
+      reader.setInvertColors(true);
+      reader.setKeepScreenOn(false);
+      reader.setTapToTurnPage(false);
+      reader.changeReadMode(MangaReadMode.webToon);
+
+      expect(
+        MiruSettings.getSettingSync<MangaFitMode>(SettingKey.mangaFitMode),
+        MangaFitMode.fitHeight,
+      );
+      expect(
+        MiruSettings.getSettingSync<MangaCanvasBackground>(
+          SettingKey.mangaCanvasBackground,
+        ),
+        MangaCanvasBackground.darkGray,
+      );
+      expect(
+        MiruSettings.getSettingSync<bool>(SettingKey.mangaInvertColors),
+        isTrue,
+      );
+      expect(
+        MiruSettings.getSettingSync<bool>(SettingKey.mangaKeepScreenOn),
+        isFalse,
+      );
+      expect(
+        MiruSettings.getSettingSync<bool>(SettingKey.mangaTapToTurnPage),
+        isFalse,
+      );
+      expect(
+        MiruSettings.getSettingSync<MangaReadMode>(SettingKey.mangaReadingMode),
+        MangaReadMode.webToon,
+      );
+    });
+
+    test('resetDisplaySettings restores every shipped default', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      reader
+        ..setFitMode(MangaFitMode.original)
+        ..setCanvasBackground(MangaCanvasBackground.light)
+        ..setBrightness(30)
+        ..setPageGap(2)
+        ..setInvertColors(true)
+        ..setKeepScreenOn(false)
+        ..setTapToTurnPage(false)
+        ..changeReadMode(MangaReadMode.webToon)
+        ..resetDisplaySettings();
+
+      final state = container.read(mangaReaderProvider);
+      expect(state.readMode, MangaReadMode.standard);
+      expect(state.fitMode, MangaFitMode.fitWidth);
+      expect(state.canvasBackground, MangaCanvasBackground.black);
+      expect(state.brightness, kMangaBrightnessDefault);
+      expect(state.pageGap, kMangaPageGapDefault);
+      expect(state.invertColors, isFalse);
+      expect(state.keepScreenOn, isTrue);
+      expect(state.tapToTurnPage, isTrue);
+    });
+
+    test('HUD starts hidden, toggles, and is not persisted', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      expect(container.read(mangaReaderProvider).hudVisible, isFalse);
+      reader.toggleHud();
+      expect(container.read(mangaReaderProvider).hudVisible, isTrue);
+      reader.toggleHud();
+      expect(container.read(mangaReaderProvider).hudVisible, isFalse);
+      // Chapter position is untouched by a HUD toggle.
+      expect(container.read(mangaReaderProvider).itemPosition, 0);
+    });
+
+    test('setPageNumber clamps to the chapter and jumpTo moves it', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 5);
+
+      reader.setPageNumber(99);
+      expect(container.read(mangaReaderProvider).itemPosition, 4);
+      reader.setPageNumber(-3);
+      expect(container.read(mangaReaderProvider).itemPosition, 0);
+
+      reader.jumpTo(2);
+      expect(container.read(mangaReaderProvider).itemPosition, 2);
+      expect(container.read(mangaReaderProvider).page, 3);
+    });
+
+    test('stepPage saturates at both ends', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 3);
+
+      reader.stepPage(-1);
+      expect(container.read(mangaReaderProvider).itemPosition, 0);
+      reader.stepPage(1);
+      reader.stepPage(1);
+      reader.stepPage(1);
+      expect(container.read(mangaReaderProvider).itemPosition, 2);
+      reader.stepPage(5);
+      expect(container.read(mangaReaderProvider).itemPosition, 2);
+    });
+
+    test('an empty chapter never records a page', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 0);
+      expect(container.read(mangaReaderProvider).totalPage, 0);
+
+      reader.setPageNumber(3);
+      reader.jumpTo(1);
+      expect(container.read(mangaReaderProvider).itemPosition, 0);
+      expect(container.read(mangaReaderProvider).historyProgress, 0);
+    });
+  });
+
+  group('resume from history', () {
+    test('open adopts the reported page as the session position', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8, resumePage: 4);
+
+      final state = container.read(mangaReaderProvider);
+      expect(state.itemPosition, 4);
+      expect(state.page, 5);
+      expect(state.historyProgress, 5);
+    });
+
+    test('the reported page clamps to the chapter', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8, resumePage: 99);
+
+      expect(container.read(mangaReaderProvider).itemPosition, 7);
+    });
+
+    test('no reported page opens at page one', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      expect(container.read(mangaReaderProvider).itemPosition, 0);
+    });
+
+    test('re-opening the same episode keeps the adopted position', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8, resumePage: 4);
+
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      expect(container.read(mangaReaderProvider).itemPosition, 4);
+    });
+
+    test('restorePosition without a canvas keeps the adopted position', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8, resumePage: 4);
+      reader.changeReadMode(MangaReadMode.webToon);
+
+      // No widget tree: neither controller is attached, so the restore is a
+      // guarded no-op and the adopted position stays.
+      reader.restorePosition(4);
+
+      expect(container.read(mangaReaderProvider).itemPosition, 4);
+    });
+
+    test('restorePosition clamps a stale target', () {
+      final container = _container();
+      final reader = container.read(mangaReaderProvider.notifier);
+      reader.open(groupIndex: 0, episodeIndex: 0, totalPage: 8);
+
+      reader.restorePosition(99);
+
+      expect(container.read(mangaReaderProvider).itemPosition, 0);
+    });
+  });
+}

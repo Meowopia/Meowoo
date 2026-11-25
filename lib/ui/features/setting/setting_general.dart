@@ -1,0 +1,283 @@
+import 'package:miru_alpha/utils/update/update_service.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:forui/forui.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:miru_alpha/provider/application_controller_provider.dart';
+import 'package:miru_alpha/provider/extension_page_notifier_provider.dart';
+import 'package:miru_alpha/provider/search/search_page_provider.dart';
+import 'package:miru_alpha/ui/features/extension/view_models/extension_view_model.dart';
+import 'package:miru_alpha/utils/core/i18n.dart';
+import 'package:miru_alpha/utils/theme/theme.dart';
+import 'package:miru_alpha/utils/theme/skin_library.dart';
+import 'package:miru_alpha/ui/core/index.dart';
+import 'package:miru_alpha/ui/features/setting/widget/amoei_skin_preview.dart';
+import 'package:miru_alpha/ui/features/setting/widget/skin_pack_gallery.dart';
+import 'package:miru_alpha/ui/features/setting/widget/settings_update_alert.dart';
+import 'package:miru_alpha/utils/setting_dir_index.dart';
+import 'package:miru_alpha/provider/app_update_provider.dart';
+import 'package:miru_alpha/utils/store/nsfw_session.dart';
+
+class SettingGeneral extends HookConsumerWidget {
+  const SettingGeneral({super.key, this.isMobileLayout = false});
+  final bool isMobileLayout;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    useStream(nsfwSession.changes, initialData: nsfwSession.enabled);
+    final c = ref.read(applicationControllerProvider.notifier);
+    final (baseColor, primaryColor) = ref.watch(
+      applicationControllerProvider.select(
+        (s) => (s.baseColor, s.primaryColor),
+      ),
+    );
+    final skinId = currentMiruSkinId(baseColor, primaryColor) ?? 'custom';
+    return ListView(
+      // Bottom inset so the dialog/page floor never slices the last tile's
+      // subtitle or its selector border mid-line (the list edge otherwise
+      // reads as truncation). 40 keeps a clear gap at max scroll.
+      padding: .fromLTRB(0, 0, 0, 40),
+      children: [
+        // Desktop only: the mobile settings root page already shows this
+        // banner above the section list, so the General pane would repeat it.
+        if (!isMobileLayout) const SettingsUpdateAlert(),
+        const SkinPackGallery(),
+        SettingGroup(
+          isMobileLayout: isMobileLayout,
+          title: 'settings.labels.content.name',
+          children: [
+            SettingsInputTile(
+              isMobileLayout: isMobileLayout,
+              title: "settings.labels.tmdb_api_key.name",
+              subtitle: 'settings.labels.tmdb_api_key.information',
+              initialValue: MiruSettings.getSettingSync<String>(
+                SettingKey.tmdbKey,
+              ),
+              hintText: 'settings.labels.tmdb_api_key.hint',
+              onChanged: (value) {
+                MiruSettings.setSettingSync(SettingKey.tmdbKey, value);
+              },
+            ),
+
+            SettingsRadiosTile.detailed(
+              isMobileLayout: isMobileLayout,
+              title: "settings.labels.language.name",
+              subtitle: 'settings.labels.language.information',
+              value: MiruSettings.getSettingSync<String>(SettingKey.language),
+              onChanged: (value) {
+                c.changeLanguage(value);
+                I18nUtils.changeLanguage(value);
+              },
+              entry: const [
+                RadioTileEntry(value: 'en', title: 'settings.labels.en'),
+                RadioTileEntry(value: 'zh', title: 'settings.labels.zh'),
+              ],
+            ),
+
+            SettingsToggleTile(
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.allow_nsfw.name',
+              subtitle: 'settings.labels.allow_nsfw.information',
+              controlled: true,
+              value: nsfwSession.enabled,
+              onChanged: (value) async {
+                if (value &&
+                    MiruSettings.getSetting<bool>(
+                          SettingKey.nsfwNoticeAccepted,
+                        ) !=
+                        true) {
+                  final accepted = await showMiruDialog<bool>(
+                    context: context,
+                    title: Text('settings.labels.allow_nsfw.name'.i18n),
+                    body: Text('settings.labels.allow_nsfw.notice'.i18n),
+                    actions: [
+                      FButton(
+                        variant: .outline,
+                        onPress: () => Navigator.of(context).pop(false),
+                        child: Text('common.cancel'.i18n),
+                      ),
+                      FButton(
+                        onPress: () => Navigator.of(context).pop(true),
+                        child: Text('common.confirm'.i18n),
+                      ),
+                    ],
+                  );
+                  if (accepted != true || !context.mounted) return;
+                  MiruSettings.setSettingSync(
+                    SettingKey.nsfwNoticeAccepted,
+                    'true',
+                  );
+                }
+                MiruSettings.setSettingSync(
+                  SettingKey.enableNSFW,
+                  value.toString(),
+                );
+                // Refilter already-fetched content in place — never refetch.
+                // Invalidating here would wipe the fetched repos while the
+                // StatefulShellRoute keeps the extension page mounted, leaving
+                // it permanently empty on desktop and mobile.
+                ref.read(extensionPageProvider.notifier).filter();
+                ref.read(extensionViewModelProvider.notifier).refilter();
+                ref.read(searchPageProvider.notifier).refilter();
+              },
+            ),
+          ],
+        ),
+
+        SettingGroup(
+          isMobileLayout: isMobileLayout,
+          title: 'settings.labels.appearance.name',
+          children: [
+            SettingsRadiosTile.detailed(
+              key: ValueKey(('skin', skinId)),
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.skin_library.name',
+              subtitle: 'settings.labels.skin_library.information',
+              value: skinId,
+              onChanged: (id) => c.applySkin(id),
+              entry: miruSkinLibrary
+                  .map(
+                    (skin) => RadioTileEntry(
+                      value: skin.id,
+                      title: 'settings.labels.skins.${skin.id}',
+                    ),
+                  )
+                  .followedBy(const [
+                    RadioTileEntry(
+                      value: 'custom',
+                      title: 'settings.labels.skins.custom',
+                    ),
+                  ])
+                  .toList(),
+            ),
+            AmoeiSkinPreview(
+              isApplied: skinId == amoeiSkin.id,
+              onApply: () => c.applySkin(amoeiSkin.id),
+            ),
+            SettingsRadiosTile.detailed(
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.theme.name',
+              subtitle: 'settings.labels.theme.information',
+              value: MiruSettings.getSettingSync<String>(SettingKey.theme),
+              onChanged: (val) => c.changeTheme(val),
+              entry: const [
+                RadioTileEntry(
+                  value: 'system',
+                  title: 'settings.labels.system',
+                  icon: FLucideIcons.sunMoon,
+                ),
+                RadioTileEntry(
+                  value: 'light',
+                  title: 'settings.labels.light',
+                  icon: FLucideIcons.sun,
+                ),
+                RadioTileEntry(
+                  value: 'dark',
+                  title: 'settings.labels.dark',
+                  icon: FLucideIcons.moon,
+                ),
+              ],
+            ),
+            SettingsRadiosTile.detailed(
+              key: ValueKey(('base', baseColor)),
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.base_color.name',
+              subtitle: 'settings.labels.base_color.information',
+              value: baseColor,
+              onChanged: (val) => c.changeBaseColor(val),
+              entry: selectableBaseColorNames
+                  .map(
+                    (e) =>
+                        RadioTileEntry(value: e, title: 'settings.labels.$e'),
+                  )
+                  .toList(),
+            ),
+            SettingsRadiosTile.detailed(
+              key: ValueKey(('primary', primaryColor)),
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.primary_color.name',
+              subtitle: 'settings.labels.primary_color.information',
+              value: primaryColor,
+              onChanged: (val) => c.changePrimaryColor(val),
+              entry: primaryColorNames
+                  .map(
+                    (e) =>
+                        RadioTileEntry(value: e, title: 'settings.labels.$e'),
+                  )
+                  .toList(),
+            ),
+            // SettingsSliderTile(
+            //   isMobileLayout: isMobileLayout,
+            //   title: 'settings.labels.base_color_tint_strength.name',
+            //   subtitle: 'settings.labels.base_color_tint_strength.information',
+            //   value: ref.watch(applicationControllerProvider).tintStrength,
+            //   min: 0,
+            //   max: 1,
+            //   stepPercentage: 0.01,
+            //   onChanged: (value) => c.changeTintStrength(value),
+            // ),
+          ],
+        ),
+        SettingGroup(
+          isMobileLayout: isMobileLayout,
+          title: 'settings.labels.others.name',
+          children: [
+            if (UpdateService.productionUpdatesEnabled)
+              SettingsToggleTile(
+                isMobileLayout: isMobileLayout,
+                title: 'settings.labels.auto_update.name',
+                subtitle: 'settings.labels.auto_update.information',
+                value: MiruSettings.getSettingSync<bool>(
+                  SettingKey.autoCheckUpdate,
+                ),
+                onChanged: (value) {
+                  MiruSettings.setSettingSync(
+                    SettingKey.autoCheckUpdate,
+                    value.toString(),
+                  );
+                },
+              ),
+
+            // Manual trigger: the automatic check only runs at launch and
+            // only when the toggle above is on, so the banner needs a way to
+            // be summoned (and retried) from the page it lives on.
+            SettingPressTile(
+              isMobileLayout: isMobileLayout,
+              title: 'settings.update.check_now',
+              subtitle: 'settings.update.check_now_information',
+              prefix: const Icon(FLucideIcons.refreshCw),
+              onPress: () => ref.read(appUpdateProvider.notifier).checkNow(),
+            ),
+
+            SettingsToggleTile(
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.mobile_header_top.name',
+              subtitle: 'settings.labels.mobile_header_top.information',
+              value: MiruSettings.getSettingSync<bool>(
+                SettingKey.mobiletitleIsonTop,
+              ),
+              onChanged: (value) {
+                ref
+                    .read(applicationControllerProvider.notifier)
+                    .updateMobileTitleOnTop(value);
+              },
+            ),
+            SettingsToggleTile(
+              isMobileLayout: isMobileLayout,
+              title: 'settings.labels.show_page_number.name',
+              subtitle: 'settings.labels.show_page_number.information',
+              value: MiruSettings.getSettingSync<bool>(
+                SettingKey.showPageNumber,
+              ),
+              onChanged: (value) {
+                MiruSettings.setSettingSync(
+                  SettingKey.showPageNumber,
+                  value.toString(),
+                );
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}

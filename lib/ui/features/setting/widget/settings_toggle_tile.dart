@@ -1,0 +1,51 @@
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:forui/forui.dart';
+import 'package:miru_alpha/utils/core/i18n.dart';
+import 'package:miru_alpha/ui/features/setting/widget/setting_base_tile.dart';
+
+class SettingsToggleTile extends HookWidget with FTileMixin {
+  const SettingsToggleTile({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+    this.isMobileLayout = false,
+    this.controlled = false,
+    this.onTap,
+    this.icon,
+  });
+
+  final String title;
+  final String? subtitle;
+  final bool value;
+  final Function(bool) onChanged;
+  final void Function()? onTap;
+  final IconData? icon;
+  final bool isMobileLayout;
+  final bool controlled;
+  @override
+  Widget build(BuildContext context) {
+    final val = useState(value);
+    void change(bool next) {
+      if (!controlled) val.value = next;
+      onChanged(next);
+    }
+
+    final selected = controlled ? value : val.value;
+    if (isMobileLayout) {
+      return FTile(
+        onPress: onTap,
+        title: Text(title.i18n),
+        subtitle: subtitle == null ? null : Text(subtitle!.i18n),
+        suffix: FSwitch(value: selected, onChange: change),
+      );
+    }
+    return SettingBaseTile(
+      title: title,
+      subtitle: subtitle,
+      child: FSwitch(value: selected, onChange: change),
+    );
+  }
+}

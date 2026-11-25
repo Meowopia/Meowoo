@@ -1,0 +1,552 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:material_ui/material_ui.dart';
+import 'package:miru_alpha/model/model.dart';
+import 'package:miru_alpha/utils/core/log.dart';
+import 'package:miru_alpha/utils/core/miru_directory.dart';
+import 'package:miru_alpha/miru_core/grpc_client.dart';
+import 'package:miru_alpha/miru_core/proto/proto.dart' as proto;
+import 'package:path/path.dart' as p;
+
+import 'appearance_session.dart';
+import 'ordered_settings_writes.dart';
+import 'settings_snapshot_guard.dart';
+import 'nsfw_session.dart';
+
+class MiruSettings {
+  static Map<String, String> _settingsCache = {};
+  static final _orderedWrites = OrderedSettingsWrites();
+  static final _snapshotGuard = SettingsSnapshotGuard();
+  static Future<void> _nsfwWrites = Future<void>.value();
+
+  /// Appearance/locale keys mirrored into the on-disk session file
+  /// (`session_settings.json`, next to the DB). They are the settings the
+  /// app reads SYNCHRONOUSLY during the connecting window (theme, colors,
+  /// language for the i18n delegate), so a local copy lets the first frames
+  /// render the user's real appearance before the backend answers.
+  /// Deliberately small — everything else stays backend-authoritative.
+  static const Set<String> _sessionKeys = {
+    SettingKey.theme,
+    SettingKey.skinPackId,
+    SettingKey.baseColor,
+    SettingKey.accentColor,
+    SettingKey.baseColorTintStrength,
+    SettingKey.language,
+    SettingKey.mobiletitleIsonTop,
+  };
+
+  /// Test seam: overrides the session file location (the real path needs
+  /// the platform directory plugins).
+  @visibleForTesting
+  static String? sessionFilePathOverride;
+
+  static String get _sessionFilePath =>
+      sessionFilePathOverride ??
+      p.join(MiruDirectory.getDirectory, 'session_settings.json');
+
+  /// Loads the session copy into the cache. Bootstrap runs this before
+  /// `runApp`, after [seedDefaults]: precedence is defaults < session file <
+  /// backend DB (the gate overlays DB values once connected).
+  static void loadSessionSettings() {
+    try {
+      final file = File(_sessionFilePath);
+      if (!file.existsSync()) return;
+      final decoded = jsonDecode(file.readAsStringSync());
+      if (decoded is! Map) return;
+      for (final key in _sessionKeys) {
+        final value = decoded[key];
+        if (value != null) _settingsCache[key] = value.toString();
+      }
+      logger.info('Session settings loaded from $_sessionFilePath');
+    } catch (e) {
+      logger.warning('Failed to read session settings: $e');
+    }
+  }
+
+  /// Writes the session-tracked keys from the cache to the session file.
+  /// Called on every tracked write and after the backend settings load, so
+  /// the copy always mirrors the last-known truth.
+  static void persistSessionSettings() {
+    try {
+      final values = {
+        for (final key in _sessionKeys)
+          if (_settingsCache[key] != null) key: _settingsCache[key]!,
+      };
+      writeAppearanceSession(File(_sessionFilePath), values);
+    } catch (e) {
+      logger.warning('Failed to write session settings: $e');
+    }
+  }
+
+  static bool _isSessionTracked(String key) => _sessionKeys.contains(key);
+  static Future<void> getAllSetting() async {
+    final readEpoch = _snapshotGuard.beginRead();
+    try {
+      final response = await MiruGrpcClient.appSettingClient.getAppSetting(
+        proto.GetAppSettingRequest(),
+      );
+      if (!_snapshotGuard.accepts(readEpoch)) return;
+      final Map<String, String> result = {};
+      for (final s in response.settings) {
+        result[s.key] = s.value;
+      }
+      // An empty/old server snapshot cannot erase defaults or undo choices
+      // made locally this session (including a pending opt-out).
+      final packSelected =
+          (_settingsCache[SettingKey.skinPackId] ?? '').isNotEmpty;
+      _settingsCache = _snapshotGuard.merge(
+        remote: result,
+        defaults: _defaultSettings.map((key, value) => MapEntry(key, '$value')),
+        local: _settingsCache,
+        deviceLocalKeys: {
+          SettingKey.skinPackId,
+          if (packSelected) SettingKey.baseColor,
+          if (packSelected) SettingKey.accentColor,
+        },
+      );
+      nsfwSession.setEnabled(_settingsCache[SettingKey.enableNSFW] == 'true');
+    } catch (e) {
+      logger.info('Failed to fetch app settings via gRPC: $e');
+    }
+  }
+
+  // Update key and value in miru core by HTTP
+  static Future<void> setSetting(String key, dynamic value) async {
+    final text = value.toString();
+    Future<void> send(String key, String value) async {
+      await MiruGrpcClient.appSettingClient.setAppSetting(
+        proto.SetAppSettingRequest()
+          ..settings.add(proto.AppSetting(key: key, value: value)),
+      );
+    }
+
+    try {
+      if (key == SettingKey.enableNSFW) {
+        // This setting keeps its existing synchronous gate and ordered input
+        // queue. Never let an RPC acknowledgement re-enable a revoked session.
+        await send(key, text);
+        return;
+      }
+      await _orderedWrites.write(
+        key: key,
+        value: text,
+        send: send,
+        onCommitted: (key, value) {
+          _snapshotGuard.edited([key]);
+          _settingsCache[key] = value;
+          if (_isSessionTracked(key)) persistSessionSettings();
+        },
+      );
+    } catch (e) {
+      logger.info('Failed to set setting $key to $text via gRPC: $e');
+    }
+  }
+
+  static Future<void> ensureInitialized() async {
+    await getAllSetting();
+    await _initSettings();
+    // Keep the session copy in step with the authoritative DB values.
+    persistSessionSettings();
+    logger.info('Settings initialized');
+  }
+
+  static final Map<String, dynamic> _defaultSettings = {
+    SettingKey.miruRepoUrl: "https://miru-repo.0n0.dev",
+    SettingKey.tmdbKey: "",
+    SettingKey.autoCheckUpdate: 'true',
+    // Version the user chose to skip in the launch prompt ('' = never).
+    SettingKey.ignoredUpdateVersion: '',
+    SettingKey.laterUpdateVersion: '',
+    SettingKey.language: 'en',
+    SettingKey.novelFontSize: "18.0",
+    SettingKey.theme: 'system',
+    SettingKey.enableNSFW: 'false',
+    SettingKey.nsfwNoticeAccepted: 'false',
+    SettingKey.videoPlayer: 'built-in',
+    SettingKey.listMode: "grid",
+    SettingKey.keyI: "10.0",
+    SettingKey.keyJ: "-10.0",
+    SettingKey.arrowLeft: "-2.0",
+    SettingKey.arrowRight: "2.0",
+    SettingKey.mangaReadingMode: "standard",
+    SettingKey.aniListToken: '',
+    SettingKey.aniListUserId: '',
+    SettingKey.autoTracking: 'true',
+    SettingKey.windowSize: "1280,720",
+    SettingKey.androidWebviewUA: "Mozilla/5.0 (Linux; Android 13; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.43 Mobile Safari/537.36",
+    SettingKey.windowsWebviewUA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    SettingKey.proxy: '',
+    SettingKey.proxyActivate: 'false',
+    SettingKey.proxyList: {}.toString(),
+    SettingKey.saveLog: 'true',
+    SettingKey.captureCrash: 'true',
+    SettingKey.subtitleFontSize: "46.0",
+    SettingKey.subtitleFontColor: Colors.white.toARGB32().toString(),
+    SettingKey.subtitleFontWeight: 'bold',
+    SettingKey.subtitleBackgroundColor: Colors.black.toARGB32().toString(),
+    SettingKey.subtitleBackgroundOpacity: "0.5",
+    SettingKey.subtitleTextAlign: TextAlign.center.index.toString(),
+    SettingKey.accentColor: "none",
+    SettingKey.baseColor: "zinc",
+    SettingKey.skinPackId: "",
+    SettingKey.baseColorTintStrength: "0.5",
+    SettingKey.mobiletitleIsonTop: "true",
+    SettingKey.btServerLink: "https://github.com/miru-project/bt-server",
+    SettingKey.maxConnection: "3",
+    SettingKey.showDeleteExtensionDialog: "true",
+    SettingKey.pinnedExtension: {}.toString(),
+    SettingKey.hiddenExtension: {}.toString(),
+    SettingKey.searchHistory: '[]',
+    SettingKey.recentExtensions: '[]',
+    SettingKey.showPageNumber: "false",
+    SettingKey.novelReadingMode: "webToon",
+    SettingKey.novelLineHeight: "1.6",
+    SettingKey.novelFontFamily: 'serif',
+    SettingKey.novelTheme: 'midnight',
+    SettingKey.novelMargin: "20.0",
+    SettingKey.novelKeepScreenOn: "true",
+    SettingKey.novelTapToTurnPage: "true",
+    SettingKey.novelVolumeKeysTurnPage: "false",
+    SettingKey.novelBookmarks: "",
+    SettingKey.downloadPath: "",
+    SettingKey.downloadConcurrent: "3",
+    SettingKey.hideMissingDownloads: "true",
+    SettingKey.mangaFitMode: "fitWidth",
+    SettingKey.mangaCanvasBackground: "black",
+    // Brightness defaults to auto: the reader should not take the screen's
+    // brightness over on first open, and manual at 100% is a no-op that only
+    // wins the argument with the system setting. Set it explicitly from the
+    // reader's brightness control when the reader wants a specific value.
+    SettingKey.mangaBrightnessMode: "auto",
+    SettingKey.mangaBrightness: "100",
+    // No gap between pages: a reader page is the content edge to edge, and the
+    // default 12pt drew a black gutter down both sides of every page.
+    SettingKey.mangaPageGap: "0",
+    SettingKey.mangaInvertColors: "false",
+    SettingKey.mangaKeepScreenOn: "true",
+    SettingKey.mangaTapToTurnPage: "true",
+    SettingKey.mangaBookmarks: "",
+    // readerPillAnchor: which snap slot the draggable progress pill rests on.
+    // Name of one of `ReaderPillAnchor`: `line` (vertical center line,
+    // y along the safe-area segment from `readerPillLineY`) or one of the
+    // four corners. Legacy `bottomCenter` maps onto `line` at fraction 1.0.
+    SettingKey.readerPillAnchor: "line",
+    // readerPillLineY: rest fraction along the vertical center line,
+    // 0 = top end of the safe-area segment, 1 = bottom end.
+    SettingKey.readerPillLineY: "1.0",
+  };
+  static Future<void> _initSettings() async {
+    for (final entry in _defaultSettings.entries) {
+      if (_settingsCache[entry.key] == null) {
+        _settingsCache[entry.key] = entry.value;
+      }
+    }
+  }
+
+  static void setSettingSync(String key, String value) {
+    _snapshotGuard.edited([key]);
+    _settingsCache[key] = value;
+    if (key == SettingKey.enableNSFW) {
+      nsfwSession.setEnabled(value == 'true');
+      // Persist opt-in/out in input order, even across rapid toggles.
+      _nsfwWrites = _nsfwWrites.then((_) => setSetting(key, value));
+      return;
+    }
+    if (_isSessionTracked(key)) persistSessionSettings();
+    setSetting(key, value);
+  }
+
+  /// All three appearance values are one local session-file transaction.
+  static bool setAppearancePack(String id, String base, String accent) {
+    final changes = {
+      SettingKey.skinPackId: id,
+      SettingKey.baseColor: base,
+      SettingKey.accentColor: accent,
+    };
+    final next = {..._settingsCache, ...changes};
+    try {
+      writeAppearanceSession(File(_sessionFilePath), {
+        for (final key in _sessionKeys)
+          if (next[key] != null) key: next[key]!,
+      });
+    } on Exception catch (error) {
+      logger.warning('Appearance settings could not be saved', error);
+      return false;
+    }
+    _settingsCache = next;
+    _snapshotGuard.edited(changes.keys);
+    for (final entry in changes.entries) {
+      setSetting(entry.key, entry.value);
+    }
+    return true;
+  }
+
+  /// Test-only: seeds the in-memory settings cache with the default values
+  /// without contacting the gRPC backend.
+  /// Re-seeds the cache with the shipped defaults for a fresh test case.
+  ///
+  /// This **replaces** the cache rather than filling in what is missing: reader
+  /// settings are persisted, so a value one test writes would otherwise be
+  /// inherited by the next one and make it pass or fail depending on order.
+  static void seedDefaultsForTest() {
+    _snapshotGuard.reset();
+    nsfwSession.setEnabled(false);
+    _settingsCache
+      ..clear()
+      ..addAll(_defaultSettings.map((key, value) => MapEntry(key, '$value')));
+  }
+
+  /// Seeds the settings cache with the shipped defaults WITHOUT contacting
+  /// the backend (missing keys only — never overwrites a fetched value).
+  ///
+  /// The bootstrap runs this before `runApp`: the init page is gone, so the
+  /// first frames read theme/language synchronously while the connection gate
+  /// is still pending. [ensureInitialized] later overlays the user's
+  /// persisted values on top of the same defaults.
+  static void seedDefaults() {
+    for (final entry in _defaultSettings.entries) {
+      _settingsCache[entry.key] ??= '${entry.value}';
+    }
+  }
+
+  static T? getSetting<T>(String key) {
+    final value = _settingsCache[key];
+    if (value == null) {
+      return null;
+    }
+    return convertStringToObj<T>(value);
+  }
+
+  static T getSettingSync<T>(String key) {
+    final value = _settingsCache[key];
+    if (value == null) {
+      throw Exception('Setting $key not found');
+    }
+    return convertStringToObj<T>(value);
+  }
+
+  /// Returns the recent extension package names (newest first), persisted as a
+  /// JSON array under [SettingKey.recentExtensions].
+  static List<String> getRecentExtensions() {
+    final raw = _settingsCache[SettingKey.recentExtensions];
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// Pushes [pkg] to the front of the recent extensions list, dedupes, and
+  /// persists the result capped at [SettingKey.recentExtensionsMax].
+  static void addRecentExtension(String pkg) {
+    final next = [
+      pkg,
+      ...getRecentExtensions().where((e) => e != pkg),
+    ].take(SettingKey.recentExtensionsMax).toList();
+    setSettingSync(SettingKey.recentExtensions, jsonEncode(next));
+  }
+
+  /// Returns the genre tags the user starred from a detail page's category
+  /// chips, persisted as a JSON array under [SettingKey.favoriteTags].
+  static List<String> getFavoriteTags() {
+    final raw = _settingsCache[SettingKey.favoriteTags];
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// Adds [tag] when absent, removes it when present — the category chip's
+  /// toggle — and persists the new list. Returns the list after the change.
+  static List<String> toggleFavoriteTag(String tag) {
+    final current = getFavoriteTags();
+    final next = current.contains(tag)
+        ? current.where((e) => e != tag).toList()
+        : [...current, tag];
+    setSettingSync(SettingKey.favoriteTags, jsonEncode(next));
+    return next;
+  }
+
+  static T convertStringToObj<T>(String value) {
+    final type = T;
+
+    switch (type) {
+      case const (bool):
+        return (value == 'true') as T;
+      case const (double):
+        return double.parse(value) as T;
+      case const (int):
+        return int.parse(value) as T;
+      case const (String):
+        return value as T;
+      case const (Color):
+        return Color(int.parse(value)) as T;
+      case const (List<String>):
+        return value.split(',').map((e) => e.trim()).toList() as T;
+      case const (Set<String>):
+        final val = value.substring(1, value.length - 1);
+        if (val.isEmpty) {
+          return <String>{} as T;
+        }
+        return val.split(',').map((e) => e.trim()).toSet() as T;
+      case const (MangaReadMode):
+        return (MangaReadMode.values
+                    .where((e) => e.name == value)
+                    .firstOrNull ??
+                MangaReadMode.standard)
+            as T;
+      case const (NovelReadMode):
+        return (NovelReadMode.values
+                    .where((e) => e.name == value)
+                    .firstOrNull ??
+                // Standard, not webtoon: every other mode parser in this switch
+                // falls back to its first value, and a value that cannot be
+                // understood should not silently change the reading mode.
+                NovelReadMode.standard)
+            as T;
+      case const (NovelFontFamily):
+        return (NovelFontFamily.values
+                    .where((e) => e.name == value)
+                    .firstOrNull ??
+                NovelFontFamily.serif)
+            as T;
+      case const (NovelTheme):
+        return (NovelTheme.values.where((e) => e.name == value).firstOrNull ??
+                NovelTheme.midnight)
+            as T;
+      case const (MangaFitMode):
+        return (MangaFitMode.values.where((e) => e.name == value).firstOrNull ??
+                MangaFitMode.fitWidth)
+            as T;
+      case const (MangaCanvasBackground):
+        return (MangaCanvasBackground.values
+                    .where((e) => e.name == value)
+                    .firstOrNull ??
+                MangaCanvasBackground.black)
+            as T;
+      case const (MangaBrightnessMode):
+        return (MangaBrightnessMode.values
+                    .where((e) => e.name == value)
+                    .firstOrNull ??
+                // `auto`, matching the shipped default and the first value of the
+                // enum, so a value that cannot be understood does not silently
+                // take the screen's brightness over.
+                MangaBrightnessMode.auto)
+            as T;
+      default:
+        throw Exception('Unknown $T');
+    }
+  }
+}
+
+class SettingKey {
+  static const skinPackId = 'MeowooSkinPackId';
+  static const theme = "Theme";
+  static const miruRepoUrl = "MiruRepoUrl";
+  static const tmdbKey = 'TMDBKey';
+  static const autoCheckUpdate = 'AutoCheckUpdate';
+
+  /// Version tag the user ignored in the launch update prompt (`v`-less, e.g.
+  /// `2.1.0`). A newer release clears the effect on its own.
+  static const ignoredUpdateVersion = 'IgnoredUpdateVersion';
+
+  /// Version tag the user pressed *Later* on. Only the launch prompt is
+  /// silenced — the settings banner keeps offering the update — and a newer
+  /// release raises the prompt again on its own.
+  static const laterUpdateVersion = 'LaterUpdateVersion';
+  static const language = 'Language';
+  static const novelFontSize = 'NovelFontSize';
+  static const enableNSFW = 'EnableNSFW';
+  static const nsfwNoticeAccepted = 'MeowooNsfwNoticeAccepted';
+  static const videoPlayer = 'VideoPlayer';
+  static const databaseVersion = 'DatabaseVersion';
+  static const listMode = 'ListMode';
+  static const keyI = 'KeyI';
+  static const keyJ = 'KeyJ';
+  static const arrowLeft = 'Arrowleft';
+  static const arrowRight = 'Arrowright';
+  static const mangaReadingMode = 'ReadingMode';
+  // Reader display settings, all persisted as strings by MiruSettings.
+  // Fit mode is a [MangaFitMode] name, canvas a [MangaCanvasBackground] name,
+  // brightness mode a [MangaBrightnessMode] name, brightness/page gap are
+  // integers, the rest are booleans.
+  static const mangaFitMode = 'MangaFitMode';
+  static const mangaCanvasBackground = 'MangaCanvasBackground';
+  static const mangaBrightnessMode = 'MangaBrightnessMode';
+  static const mangaBrightness = 'MangaBrightness';
+  static const mangaPageGap = 'MangaPageGap';
+  static const mangaInvertColors = 'MangaInvertColors';
+  static const readerPillAnchor = 'ReaderPillAnchor';
+  static const readerPillLineY = 'ReaderPillLineY';
+  static const mangaKeepScreenOn = 'MangaKeepScreenOn';
+  static const mangaTapToTurnPage = 'MangaTapToTurnPage';
+  static const mangaBookmarks = 'MangaBookmarks';
+  static const aniListToken = 'AniListToken';
+  static const aniListUserId = 'AniListUserId';
+  static const autoTracking = 'AutoTracking';
+  static const windowSize = 'WindowsSize';
+  static const windowPosition = 'WindowsPosition';
+  static const androidWebviewUA = "AndroidWebviewUA";
+  static const windowsWebviewUA = "WindowsWebviewUA";
+  static const proxy = "Proxy";
+  static const saveLog = "SaveLog";
+  static const captureCrash = "CaptureCrash";
+  static const subtitleFontSize = "SubtitleFontSize";
+  static const subtitleFontWeight = "SubtitleFontWeight";
+  static const subtitleFontColor = "SubtitleFontColor";
+  static const subtitleBackgroundColor = "SubtitleBackgroundColor";
+  static const subtitleBackgroundOpacity = "SubtitleBackgroundOpacity";
+  static const subtitleTextAlign = "SubtitleTextAlign";
+  static const subtitleLastLanguageSelected = "SubtitleLastLanguageSelected";
+  static const subtitleLastTitleSelected = "SubtitleLastTitleSelected";
+  static const accentColor = "AccentColor";
+  static const baseColor = "BaseColor";
+  static const baseColorTintStrength = "BaseColorTintStrength";
+  static const mobiletitleIsonTop = "MobileTitleIsOnTop";
+  static const btServerLink = "BtServerLink";
+  static const maxConnection = "MaxConnection";
+  static const pinnedExtension = "PinnedExtension";
+
+  /// Sources the user toggled invisible on the `/search` tab (the card's eye
+  /// button). Stored like [pinnedExtension]; hidden sources leave both the
+  /// source list and the global-search scope until restored.
+  static const hiddenExtension = "HiddenExtension";
+  static const showDeleteExtensionDialog = "ShowDeleteExtensionDialog";
+  static const showPageNumber = 'ShowPageNumber';
+  static const novelReadingMode = 'NovelReadingMode';
+  // Novel reader display settings. Reading mode is a [NovelReadMode] name, font
+  // family a [NovelFontFamily] name and paper a [NovelTheme] name; font size,
+  // line height and margin are doubles, the rest are booleans.
+  static const novelLineHeight = 'NovelLineHeight';
+  static const novelFontFamily = 'NovelFontFamily';
+  static const novelTheme = 'NovelTheme';
+  static const novelMargin = 'NovelMargin';
+  static const novelKeepScreenOn = 'NovelKeepScreenOn';
+  static const novelTapToTurnPage = 'NovelTapToTurnPage';
+  static const novelVolumeKeysTurnPage = 'NovelVolumeKeysTurnPage';
+  static const novelBookmarks = 'NovelBookmarks';
+  static const downloadPath = 'DownloadPath';
+  static const downloadConcurrent = 'downloadConcurrent';
+  // When true (default), download entries whose file no longer exists on disk
+  // are hidden in the desktop download list unless the user expands "show
+  // missing" files.
+  static const hideMissingDownloads = 'hideMissingDownloads';
+  static const proxyActivate = 'ProxyActivate';
+  static const proxyList = 'ProxyList';
+  static const searchHistory = 'SearchHistory';
+  // Most recently visited extensions (entering their latest page), stored as a
+  // JSON array of package names, newest first, capped at [recentExtensionsMax].
+  static const recentExtensions = 'RecentExtensions';
+  static const recentExtensionsMax = 6;
+  // Genre tags starred from a detail page's category chips, stored as a
+  // JSON array of tag names.
+  static const favoriteTags = 'FavoriteTags';
+}

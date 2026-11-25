@@ -1,0 +1,300 @@
+import 'dart:async';
+import 'dart:ffi' as ffi;
+import 'dart:io';
+import 'dart:isolate';
+
+import 'package:ffi/ffi.dart';
+import 'package:flutter/services.dart';
+import 'package:logging/logging.dart';
+
+import 'package:miru_alpha/generated_bindings.dart';
+import 'package:miru_alpha/miru_core/network.dart';
+import 'package:miru_alpha/utils/core/log.dart';
+import 'package:miru_alpha/utils/store/storage_index.dart';
+import 'package:path/path.dart' as p;
+
+import 'dart:convert';
+
+class MiruCoreIsolateData {
+  final String configPath;
+  final RootIsolateToken token;
+  final SendPort sendPort;
+
+  MiruCoreIsolateData(this.configPath, this.token, this.sendPort);
+}
+
+class Core {
+  static String configLoc = '';
+  static Map<String, dynamic>? configData;
+  static bool isInit = false;
+
+  /// Resilient address accessors: with the init page gone these are read
+  /// while the connection gate is still pending (the connecting title), and
+  /// before [loadConfig] has run (widget tests). They fall back to the
+  /// shipped defaults instead of throwing a late-initialization error.
+  static String get port => _configField('port', '3000');
+  static String get host => _configField('address', '127.0.0.1');
+  static String get baseUrl => 'http://$host:$port';
+
+  static String _configField(String key, String fallback) {
+    if (configData case final Map<String, dynamic> data) {
+      final value = data[key];
+      if (value is String && value.isNotEmpty) return value;
+    }
+    return fallback;
+  }
+
+  static late String extensionPath;
+
+  static String get getExtensionPath => extensionPath;
+
+  /// The currently running miru core isolate, so a re-spawn can stop a
+  /// previous attempt first instead of leaving a zombie behind.
+  static Isolate? _coreIsolate;
+
+  /// Minimum delay between two core isolate spawns. Killing a spawned
+  /// isolate cannot cancel a native boot (initDyLib) already in flight —
+  /// a second spawn inside that window double-initializes the Go backend
+  /// (double port bind, double DB open) and aborts the process. The
+  /// [CoreNetwork.waitForServerLoaded] rescue cadence (60s) stays above it.
+  static const _spawnCooldown = Duration(seconds: 30);
+  static DateTime? _lastSpawnAt;
+
+  static Future<void> ensureInitialized() async {
+    await CoreNetwork.ensureInitialized();
+    await CoreNetwork.waitForServerLoaded();
+    await MiruSettings.ensureInitialized();
+  }
+
+  static void loadConfig() {
+    final appSupportDir = MiruDirectory.getDirectory;
+
+    configLoc = p.join(appSupportDir, 'config.json');
+    extensionPath = p.join(appSupportDir, 'extensions');
+
+    bool shouldWrite = false;
+    if (File(configLoc).existsSync()) {
+      logger.info('Config file exists: $configLoc');
+      configData = jsonDecode(File(configLoc).readAsStringSync());
+    } else {
+      logger.info('Config file does not exist, creating: $configLoc');
+      final configDir = Directory(appSupportDir);
+      if (!configDir.existsSync()) {
+        configDir.createSync(recursive: true);
+      }
+      configData = {};
+      shouldWrite = true;
+    }
+    final config = configData!;
+
+    // Apply defaults for missing fields so the config always contains the
+    // full set of keys the Go backend + Dart gRPC client rely on.
+    final defaultConfig = {
+      "database": {
+        "driver": "sqlite3",
+        "host": "localhost",
+        "port": 5432,
+        "user": "miru",
+        "password": "",
+        "dbname": p.join(appSupportDir, 'miru.db'),
+        "sslmode": "disable",
+      },
+      "cookieStoreLocation": Platform.isAndroid ? appSupportDir : "",
+      "extensionPath": extensionPath,
+      "address": "127.0.0.1",
+      "port": "3000",
+      "gRPCPort": "3001",
+    };
+
+    defaultConfig.forEach((key, value) {
+      if (!config.containsKey(key)) {
+        logger.info('Config missing "$key", applying default: $value');
+        config[key] = value;
+        shouldWrite = true;
+      }
+    });
+    // Also ensure the fields are non-empty, e.g. an old config could carry an
+    // empty string that would otherwise break port resolution on the backend.
+    for (final key in ["address", "port", "gRPCPort"]) {
+      final v = config[key];
+      if (v == null || (v is String && v.isEmpty)) {
+        logger.info(
+          'Config "$key" empty, applying default: ${defaultConfig[key]}',
+        );
+        config[key] = defaultConfig[key];
+        shouldWrite = true;
+      }
+    }
+
+    if (shouldWrite) {
+      final configDir = Directory(appSupportDir);
+      if (!configDir.existsSync()) {
+        configDir.createSync(recursive: true);
+      }
+      File(configLoc).writeAsStringSync(jsonEncode(configData));
+      logger.info('Configuration written to: $configLoc');
+    }
+  }
+
+  static Future<void> startIsolateNativeMiruCore(
+    MiruCoreIsolateData data,
+  ) async {
+    final configPath = data.configPath;
+    final token = data.token;
+    final sendPort = data.sendPort;
+
+    // First breath: confirm the entry point actually started running. A
+    // debugger's pause-on-start can strand this isolate before any statement
+    // executes (see [loadMiruCore]); without this handshake the main isolate
+    // cannot tell a stranded isolate apart from a slow one.
+    sendPort.send(const {'event': 'isolateStarted'});
+
+    BackgroundIsolateBinaryMessenger.ensureInitialized(token);
+    await MiruDirectory.ensureInitialized();
+    MiruLog.initForIsolate(sendPort);
+    logger.info('loading miru core isolate');
+    late final ffi.DynamicLibrary lib;
+    final libName = Platform.isWindows ? 'miru_core.dll' : 'libmiru_core.so';
+
+    try {
+      if (Platform.isWindows || Platform.isLinux) {
+        final exeFolder = File(Platform.resolvedExecutable).parent.path;
+
+        final depPrefixes = Platform.isWindows
+            ? ['libgcc_s', 'libstdc++-6']
+            : ['libgcc_s', 'libstdc++'];
+
+        final allFiles = Directory(exeFolder).listSync();
+
+        for (var prefix in depPrefixes) {
+          try {
+            final depFile = allFiles.firstWhere(
+              (f) =>
+                  f.path.toLowerCase().contains(prefix.toLowerCase()) &&
+                  (f.path.endsWith('.dll') || f.path.endsWith('.so')),
+            );
+            logger.info('Pre-loading dependency: ${depFile.path}');
+            ffi.DynamicLibrary.open(depFile.path);
+          } catch (_) {}
+        }
+      }
+
+      // 2. Load the main library
+      try {
+        lib = ffi.DynamicLibrary.open(libName);
+      } catch (e) {
+        if (Platform.isWindows) {
+          final exeFolder = File(Platform.resolvedExecutable).parent.path;
+          final dllPath = p.join(exeFolder, libName);
+          if (File(dllPath).existsSync()) {
+            logger.severe('$libName exists but failed to load (Error 126).');
+            logger.severe('Attempting load with absolute path...');
+            lib = ffi.DynamicLibrary.open(dllPath);
+          } else {
+            logger.severe('$libName NOT found in $exeFolder');
+            rethrow;
+          }
+        } else {
+          rethrow;
+        }
+      }
+
+      using((Arena arena) {
+        final configPathPointer = configPath
+            .toNativeUtf8(allocator: arena)
+            .cast<ffi.Char>();
+        final core = MiruCore(lib);
+        core.initDyLib(configPathPointer);
+      });
+      logger.info('miru core isolate loaded');
+    } catch (e, s) {
+      logger.severe('Error: $e');
+      logger.severe(s.toString());
+      sendPort.send({
+        'level': 'SHOUT',
+        'message': 'Miru Core isolate crashed: $e',
+        'stack': s.toString(),
+        'crash': true,
+      });
+      exit(1);
+    }
+  }
+
+  static Future<void> loadMiruCore() async {
+    logger.info('Loading Miru Core...');
+    // A second spawn inside the boot window is refused before anything else:
+    // the previous isolate may still be booting the native backend, and its
+    // kill cannot cancel that in-flight initDyLib.
+    final lastSpawnAt = _lastSpawnAt;
+    if (lastSpawnAt != null) {
+      final sinceLastSpawn = DateTime.now().difference(lastSpawnAt);
+      if (sinceLastSpawn < _spawnCooldown) {
+        logger.warning(
+          'Core isolate re-spawn skipped: last spawn '
+          '${sinceLastSpawn.inMilliseconds}ms ago, cooldown '
+          '${_spawnCooldown.inSeconds}s — native boot may still be in flight',
+        );
+        return;
+      }
+    }
+    // A previous spawn attempt may have left an isolate behind (stranded
+    // paused, or crashed mid-load). It owns nothing the new one needs —
+    // stop it first so a retry never accumulates zombies.
+    _coreIsolate?.kill(priority: Isolate.immediate);
+    _coreIsolate = null;
+
+    final location = configLoc;
+    final token = RootIsolateToken.instance!;
+    final started = Completer<void>();
+    final receivePort = ReceivePort();
+    final sendPort = receivePort.sendPort;
+
+    receivePort.listen((message) {
+      if (message is Map && message['event'] == 'isolateStarted') {
+        if (!started.isCompleted) started.complete();
+        return;
+      }
+      if (message is Map<String, dynamic>) {
+        final level = Level.LEVELS.firstWhere(
+          (l) => l.name == message['level'],
+          orElse: () => Level.INFO,
+        );
+        if (message['crash'] == true) {
+          MiruLog.recordCrash(
+            message['message'].toString(),
+            StackTrace.fromString(message['stack']?.toString() ?? ''),
+            source: 'miru-core',
+          );
+        }
+        logger.log(level, message['message']);
+      }
+    });
+
+    // Capture uncaught errors thrown inside the core isolate after it has
+    // started (outside the setup try/catch). addErrorListener redirects them
+    // here so they are forwarded "outside the isolate" into the main crash
+    // log instead of silently terminating the isolate.
+    final errorPort = ReceivePort();
+    errorPort.listen((message) {
+      Object? error = 'unknown isolate error';
+      StackTrace stack = StackTrace.empty;
+      if (message is List) {
+        if (message.isNotEmpty) error = message[0];
+        if (message.length > 1 && message[1] is String) {
+          stack = StackTrace.fromString(message[1] as String);
+        }
+      } else if (message != null) {
+        error = message;
+      }
+      MiruLog.recordCrash(error.toString(), stack, source: 'miru-core-isolate');
+    });
+
+    _lastSpawnAt = DateTime.now();
+    final isolate = await Isolate.spawn(
+      startIsolateNativeMiruCore,
+      MiruCoreIsolateData(location, token, sendPort),
+    );
+    _coreIsolate = isolate;
+    isolate.addErrorListener(errorPort.sendPort);
+  }
+}

@@ -1,0 +1,232 @@
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:miru_alpha/provider/extension_provider.dart';
+import 'package:miru_alpha/utils/core/i18n.dart';
+import 'package:forui/forui.dart';
+import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:miru_alpha/ui/features/watch/manga_reader/manga_reader.dart';
+import 'package:miru_alpha/ui/features/watch/novel_reader/novel_reader.dart';
+import 'package:miru_alpha/ui/features/watch/video_player/video_player.dart';
+import 'package:miru_alpha/provider/application_controller_provider.dart';
+import 'package:miru_alpha/model/index.dart';
+import 'package:miru_alpha/provider/watch/epidsode_provider.dart';
+import 'package:miru_alpha/provider/watch/manga_reader_provider.dart';
+import 'package:miru_alpha/utils/core/device_util.dart';
+import 'package:miru_alpha/utils/router/page_entry.dart';
+import 'package:miru_alpha/ui/core/error.dart';
+import 'package:miru_alpha/ui/core/widget/nsfw_content_boundary.dart';
+import 'package:miru_alpha/miru_core/proto/proto.dart' as proto;
+import 'package:miru_alpha/ui/features/watch/watch_data.dart' as watch_data;
+import 'package:wakelock_plus/wakelock_plus.dart';
+
+class WatchLoadEntry extends StatelessWidget {
+  const WatchLoadEntry({super.key, required this.param});
+  final WatchParams param;
+
+  @override
+  Widget build(BuildContext context) => NsfwContentBoundary(
+    meta: param.meta,
+    child: _WatchLoadView(param: param),
+  );
+}
+
+class _WatchLoadView extends StatefulHookConsumerWidget {
+  const _WatchLoadView({required this.param});
+  final WatchParams param;
+  @override
+  createState() => _WatchLoadEntryState();
+}
+
+class _WatchLoadEntryState extends ConsumerState<_WatchLoadView> {
+  late double maxHeight;
+  late double maxWidth;
+  late EpisodeNotifierProvider _epProvider;
+  bool _hasOriented = false;
+
+  /// Captured while mounted so [dispose] can end the reader session without
+  /// touching `ref` (a ref read in dispose throws). The notifier is kept
+  /// alive, so this reference stays valid after the route is gone.
+  MangaReader? _reader;
+
+  @override
+  void initState() {
+    super.initState();
+    _epProvider = episodeProvider(widget.param);
+    WakelockPlus.enable();
+  }
+
+  @override
+  void dispose() {
+    WakelockPlus.disable();
+    // Leaving the watch route ends the reader session: the keepAlive window,
+    // anchors and flags must not leak into the next entry. A microtask keeps
+    // the provider mutation out of the dispose lifecycle; chapter transitions
+    // never reach here — only this route's own teardown does.
+    final reader = _reader;
+    if (reader != null) {
+      Future.microtask(reader.endSession);
+    }
+    if (_hasOriented) {
+      Future.microtask(() async {
+        await Future.delayed(const Duration(microseconds: 100));
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+        ]);
+      });
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    maxWidth = DeviceUtil.getWidth(context);
+    maxHeight = DeviceUtil.getHeight(context);
+
+    if (maxWidth < maxHeight && widget.param.type == ExtensionType.bangumi) {
+      _hasOriented = true;
+      Future.microtask(() async {
+        await Future.delayed(const Duration(microseconds: 100));
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.landscapeLeft,
+        ]);
+      });
+    }
+    _reader = ref.read(mangaReaderProvider.notifier);
+    final epNotifier = ref.watch(_epProvider);
+    if (epNotifier.epGroup.isEmpty) {
+      return Center(
+        child: Column(
+          children: [
+            Text('media.no_episodes_found'.i18n),
+            FButton.icon(
+              child: Text('common.back'.i18n),
+              onPress: () {
+                context.pop();
+              },
+            ),
+          ],
+        ),
+      );
+    }
+    final url = epNotifier
+        .epGroup[epNotifier.selectedGroupIndex]
+        .urls[epNotifier.selectedEpisodeIndex]
+        .url;
+    final meta = widget.param.meta;
+    // Session injection: the single watch session loads on entry and on
+    // every episode change — the family re-key it replaces.
+    useEffect(() {
+      final session = ref.read(watchSessionProvider.notifier);
+      Future.microtask(
+        () => session.load(
+          watchUrl: url,
+          detailUrl: widget.param.detailUrl,
+          meta: meta,
+        ),
+      );
+      return null;
+    }, [url]);
+    return Consumer(
+      builder: (context, ref, child) {
+        final snapshot = ref.watch(watchSessionProvider);
+        return FTheme(
+          data: ref.watch(applicationControllerProvider).themeData,
+          child: snapshot.when(
+            data: (value) {
+              final extra = widget.param;
+              if (value.data is proto.Download) {
+                final downloadData = value.data as proto.Download;
+                switch (extra.type) {
+                  case ExtensionType.bangumi:
+                    return MiruVideoPlayer.local(
+                      name: extra.name,
+                      meta: meta,
+                      epProvider: _epProvider,
+                      hasOriented: _hasOriented,
+                      localPath: downloadData.savePath,
+                    );
+                  case ExtensionType.manga:
+                    return MiruMangaReader.local(
+                      name: extra.name,
+                      meta: meta,
+                      epProvider: _epProvider,
+                      localPath: downloadData.savePath,
+                      detailUrl: extra.detailUrl,
+                    );
+                  default:
+                    return MiruNovelReader.local(
+                      localPath: downloadData.savePath,
+                      name: extra.name,
+                      meta: meta,
+                      epProvider: _epProvider,
+                      detailImageUrl: extra.detailImageUrl,
+                      detailUrl: extra.detailUrl,
+                    );
+                }
+              }
+              switch (extra.type) {
+                case ExtensionType.bangumi:
+                  final data = watch_data.toBangumiWatch(
+                    watch_data.unwrapAll(value.data, extra.type),
+                  );
+                  return MiruVideoPlayer(
+                    name: extra.name,
+                    value: data,
+                    mediaUrl: url,
+                    meta: meta,
+                    hasOriented: _hasOriented,
+                    epProvider: _epProvider,
+                    torrent: data.torrent,
+                    v2watch: value.v2watch,
+                  );
+                case ExtensionType.manga:
+                  final data = watch_data.toMangaWatch(
+                    watch_data.unwrapAll(value.data, extra.type),
+                  );
+                  return MiruMangaReader(
+                    name: extra.name,
+                    value: data,
+                    url: url,
+                    meta: meta,
+                    detailUrl: extra.detailUrl,
+                    epProvider: _epProvider,
+                  );
+                default:
+                  final data = watch_data.toNovelWatch(
+                    watch_data.unwrapAll(value.data, extra.type),
+                  );
+                  return MiruNovelReader(
+                    meta: meta,
+                    name: extra.name,
+                    detailImageUrl: extra.detailImageUrl,
+                    value: data,
+                    epProvider: _epProvider,
+                    detailUrl: extra.detailUrl,
+                  );
+              }
+            },
+            error: (error, trace) => FScaffold(
+              child: Center(
+                child: ErrorDisplay.grpc(
+                  err: error,
+                  stack: trace,
+                  prefix: FButton(
+                    variant: .ghost,
+                    prefix: Icon(FLucideIcons.undo2),
+                    onPress: () {
+                      context.pop();
+                    },
+                    child: Text('common.return_text'.i18n),
+                  ),
+                ),
+              ),
+            ),
+            loading: () => const Center(child: FCircularProgress()),
+          ),
+        );
+      },
+    );
+  }
+}

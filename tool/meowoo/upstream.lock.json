@@ -1,0 +1,21 @@
+{
+  "client": {
+    "repository": "https://github.com/miru-project/miru-alpha.git",
+    "commit": "148b1e16969b00a600bbfcef94dde9b061c4647a",
+    "license": "GPL-3.0",
+    "version": "2.0.3-alpha"
+  },
+  "core": {
+    "repository": "https://github.com/miru-project/miru-core.git",
+    "path": "src/miru_core/miru-core",
+    "commit": "13c46223230162871f7eb7757bd8c29d15ec5f1a",
+    "license": "AGPL-3.0"
+  },
+  "toolchain": {
+    "flutter": "3.50.0",
+    "go": "1.27.3",
+    "androidCompileSdk": "36",
+    "androidNdk": "28.2.13676358",
+    "androidMinSdk": 28
+  }
+}

@@ -1,0 +1,90 @@
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+
+class MiruDirectory {
+  static late final Directory _appDocDir;
+  static late final Directory _appSupportDir;
+  static late final Directory _cacheDir;
+  static late final Directory _mirDonwloadDir;
+
+  static Future<void> ensureInitialized() async {
+    _appDocDir = await getApplicationDocumentsDirectory();
+    _appSupportDir = await getApplicationSupportDirectory();
+    _cacheDir = await getTemporaryDirectory();
+    _mirDonwloadDir = await getDownloadsDirectory() ?? _cacheDir;
+  }
+
+  static Future<String> getTempDownloadDirectory() async {
+    Directory tempDir;
+    if (Platform.isAndroid) {
+      // Use internal storage (application support directory) for Android temporary downloads
+      tempDir = Directory(path.join(_appSupportDir.path, 'temp_downloads'));
+    } else {
+      // Use system temp folder for Windows and Linux
+      tempDir = Directory(path.join(_cacheDir.path, 'miru_temp_downloads'));
+    }
+
+    if (!await tempDir.exists()) {
+      await tempDir.create(recursive: true);
+    }
+    return tempDir.path;
+  }
+
+  // static Future<bool> _requestMediaPermissions() async {
+  //   if (!Platform.isAndroid) return true;
+
+  //   // For Android 13+ (API level 33+)
+  //   if (await Permission.photos.request().isGranted &&
+  //       await Permission.videos.request().isGranted) {
+  //     return true;
+  //   }
+
+  //   // For Android 10-12 (API level 29-32)
+  //   if (await Permission.storage.request().isGranted) {
+  //     return true;
+  //   }
+
+  //   return false;
+  // }
+
+  // static Future<bool> requestMediaAccess(MediaType type) async {
+  //   if (!Platform.isAndroid) return true;
+
+  //   switch (type) {
+  //     case MediaType.images:
+  //       return await Permission.photos.request().isGranted;
+  //     case MediaType.videos:
+  //       return await Permission.videos.request().isGranted;
+  //     case MediaType.audio:
+  //       return await Permission.audio.request().isGranted;
+  //     case MediaType.all:
+  //       final photos = await Permission.photos.request().isGranted;
+  //       final videos = await Permission.videos.request().isGranted;
+  //       final audio = await Permission.audio.request().isGranted;
+  //       return photos && videos && audio;
+  //   }
+  // }
+  static String get appSupportDirectory => _miruDir(_appSupportDir);
+
+  static String get getDirectory => _miruDir(_appDocDir);
+
+  static String get getCacheDirectory => _miruDir(_cacheDir);
+
+  static String get getDownloadDirectory => _miruDir(_mirDonwloadDir);
+
+  static String _miruDir(Directory directory) {
+    try {
+      final dir = path.join(directory.path, 'miru');
+      Directory(dir).createSync(recursive: true);
+      return dir;
+    } catch (e) {
+      final dir = path.join(path.dirname(_appSupportDir.path), 'miru');
+      Directory(dir).createSync(recursive: true);
+      return dir;
+    }
+  }
+}
+
+enum MediaType { images, videos, audio, all }

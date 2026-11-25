@@ -1,0 +1,104 @@
+import 'dart:async';
+
+import 'package:miru_alpha/miru_core/grpc_client.dart';
+import 'package:miru_alpha/miru_core/proto/proto.dart' as proto;
+import 'package:miru_alpha/utils/core/log.dart';
+import 'package:miru_alpha/utils/store/nsfw_session.dart';
+
+class MiruEventService {
+  static final MiruEventService _instance = MiruEventService._internal();
+  factory MiruEventService() => _instance;
+  MiruEventService._internal();
+
+  StreamSubscription<proto.WatchEventsResponse>? _subscription;
+  List<proto.ExtensionMeta> _latestExtensionMeta = const [];
+  final _downloadController =
+      StreamController<Map<int, proto.DownloadProgress>>.broadcast();
+  final _extensionController =
+      StreamController<List<proto.ExtensionMeta>>.broadcast();
+  final _historyController = StreamController<List<proto.History>>.broadcast();
+  final _devLogController = StreamController<proto.DevLogEvent>.broadcast();
+  final _devNetworkController =
+      StreamController<proto.DevNetworkEvent>.broadcast();
+
+  /// Last installed-extension snapshot received, so a screen that subscribes
+  /// after [start] can render the current state without refetching.
+  List<proto.ExtensionMeta> get latestExtensionMeta => _latestExtensionMeta;
+
+  Stream<Map<int, proto.DownloadProgress>> get downloadStream =>
+      _downloadController.stream;
+  Stream<List<proto.ExtensionMeta>> get extensionStream =>
+      _extensionController.stream;
+  Stream<List<proto.History>> get historyStream => _historyController.stream;
+  Stream<proto.DevLogEvent> get devLogStream => _devLogController.stream;
+  Stream<proto.DevNetworkEvent> get devNetworkStream =>
+      _devNetworkController.stream;
+
+  Future<void> start() async {
+    _subscription?.cancel();
+
+    // Fetch initial state
+    try {
+      final hello = await MiruGrpcClient.coreClient.helloMiru(
+        proto.HelloMiruRequest(),
+      );
+      if (hello.downloadStatus.isNotEmpty) {
+        _downloadController.add(hello.downloadStatus);
+      }
+      if (hello.extensionMeta.isNotEmpty) {
+        _publishExtensions(hello.extensionMeta);
+      }
+      if (hello.history.isNotEmpty) {
+        _historyController.add(hello.history);
+      }
+    } catch (e) {
+      logger.warning('Failed to fetch initial state: $e');
+    }
+
+    _subscription = MiruGrpcClient.eventClient
+        .watchEvents(proto.WatchEventsRequest())
+        .listen(
+          (event) {
+            if (event.hasDownloadEvent()) {
+              _downloadController.add(event.downloadEvent.downloadStatus);
+            } else if (event.hasExtensionEvent()) {
+              _publishExtensions(event.extensionEvent.extensionMeta);
+            } else if (event.hasHistoryEvent()) {
+              _historyController.add(event.historyEvent.history);
+            } else if (event.hasDevLogEvent()) {
+              _devLogController.add(event.devLogEvent);
+            } else if (event.hasDevNetworkEvent()) {
+              _devNetworkController.add(event.devNetworkEvent);
+            }
+          },
+          onError: (e) {
+            logger.severe('Event stream error: $e');
+            // Retry after delay
+            Future.delayed(const Duration(seconds: 5), start);
+          },
+          onDone: () {
+            logger.info('Event stream closed, reconnecting...');
+            Future.delayed(const Duration(seconds: 5), start);
+          },
+          cancelOnError: true,
+        );
+  }
+
+  void stop() {
+    _subscription?.cancel();
+    _subscription = null;
+  }
+
+  /// Cache the snapshot and fan it out. The backend republishes the whole
+  /// installed list whenever the extension folder changes, so every consumer
+  /// replaces its list on receipt.
+  void _publishExtensions(List<proto.ExtensionMeta> meta) {
+    for (final extension in meta) {
+      if (extension.nsfw) nsfwSession.markRestricted(extension.package);
+    }
+    _latestExtensionMeta = meta;
+    _extensionController.add(meta);
+  }
+}
+
+final miruEventService = MiruEventService();
